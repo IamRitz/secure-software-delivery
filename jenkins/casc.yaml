@@ -1,0 +1,75 @@
+jenkins:
+  systemMessage: >-
+    Throwaway local controller for secure-software-delivery pipeline demos.
+    Do not use as a production Jenkins controller.
+  numExecutors: 2
+  mode: NORMAL
+  disableRememberMe: true
+  securityRealm:
+    local:
+      allowsSignup: false
+  authorizationStrategy:
+    unsecured: {}
+  crumbIssuer:
+    standard:
+      excludeClientIPFromCrumb: true
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: DEMO_GITHUB_TOKEN
+            value: ""
+
+unclassified:
+  location:
+    url: http://127.0.0.1:8080/
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: github-demo-pat
+              description: Read-only GitHub PAT injected at container startup
+              username: IamRitz
+              password: ${DEMO_GITHUB_TOKEN}
+
+jobs:
+  - script: >
+      multibranchPipelineJob('secure-software-delivery') {
+        displayName('secure-software-delivery')
+        branchSources {
+          branchSource {
+            source {
+              github {
+                id('secure-software-delivery-github')
+                configuredByUrl(true)
+                repositoryUrl('https://github.com/IamRitz/secure-software-delivery.git')
+                credentialsId('github-demo-pat')
+                repoOwner('IamRitz')
+                repository('secure-software-delivery')
+                traits {
+                  gitHubBranchDiscovery {
+                    strategyId(3)
+                  }
+                }
+              }
+            }
+          }
+        }
+        factory {
+          workflowBranchProjectFactory {
+            scriptPath('Jenkinsfile')
+          }
+        }
+        orphanedItemStrategy {
+          discardOldItems {
+            numToKeep(5)
+          }
+        }
+        triggers {
+          periodicFolderTrigger {
+            interval('1m')
+          }
+        }
+      }

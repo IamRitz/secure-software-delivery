@@ -63,8 +63,14 @@ docker run --rm -v "$PWD:/workspace" -w /workspace \
   node:22.23.2-alpine3.24 npm test
 ```
 
-Declarative-syntax validation and an actual stage-by-stage pipeline run still
-require access to a Jenkins controller. Use **Replay** or the Pipeline Syntax
-validator for the discovered job, then run the branch build and review its
-console output. Local Docker execution validates the commands and runtime, but
-is not presented as Jenkins server validation.
+The Phase 4 baseline was executed by a JCasC-provisioned throwaway Jenkins
+2.541.3 controller using the procedure in `jenkins/README.md`. Jenkins parsed
+the declarative pipeline, automatically discovered the feature branch, and
+reported `SUCCESS` after Checkout, Install, Lint, and Test. Repeat that
+controller-backed check after changing the pipeline; local Docker execution
+alone is not a substitute for Jenkins validation.
+
+The demo uses a read-only GitHub PAT, so Jenkins may log that it cannot publish
+a commit status. That expected 403 does not affect checkout or the build
+result, and granting write access solely to remove the message would violate
+the demo's least-privilege intent.
