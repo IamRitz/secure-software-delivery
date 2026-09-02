@@ -1,17 +1,20 @@
 # Jenkins
 
-Phase 4 provides the Jenkins equivalent of the basic GitHub Actions
-application checks. The declarative pipeline uses the exact runtime image used
-by the application container: `node:22.23.2-alpine3.24`.
+The declarative pipeline provides the Jenkins equivalent of the GitHub Actions
+checks. Application stages use the exact runtime image used by the application
+container: `node:22.23.2-alpine3.24`.
 
 ## Pipeline stages
 
 1. **Checkout** runs the standard `checkout scm` step. Automatic declarative
    checkout is disabled so this boundary remains explicit in the demo.
-2. **Install** runs `npm ci` against the committed lockfile. It never uses
+2. **Secret scanning** runs Gitleaks and TruffleHog in parallel, in
+   digest-pinned containers, and archives their redacted JSON reports. Phase 5
+   logs findings without failing the build.
+3. **Install** runs `npm ci` against the committed lockfile. It never uses
    `npm install`.
-3. **Lint** runs `npm run lint`.
-4. **Test** runs the offline test suite with `npm test`.
+4. **Lint** runs `npm run lint`.
+5. **Test** runs the offline test suite with `npm test`.
 
 The shell steps use Jenkins' default fail-fast behavior. A non-zero result from
 install, lint, or test fails its stage and the build; there is no `catchError`,

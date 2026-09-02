@@ -55,9 +55,11 @@ curl -fsS '<branch-url>lastBuild/api/json?tree=number,result,building,url'
 curl -fsS '<branch-url>lastBuild/consoleText'
 ```
 
-The successful console log must show Checkout, Install, Lint, and Test, with
-`npm ci`, ESLint, and all tests completing successfully. Local command
-emulation is not a substitute for this controller result.
+The successful console log must show Checkout, parallel Gitleaks and
+TruffleHog scans, Install, Lint, and Test. Confirm both redacted JSON reports
+appear under **Build Artifacts**, then confirm `npm ci`, ESLint, and all tests
+complete successfully. Local command emulation is not a substitute for this
+controller result.
 
 ## Tear down
 
