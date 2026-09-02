@@ -1,0 +1,24 @@
+{
+  "name": "secure-software-delivery",
+  "version": "1.0.0",
+  "description": "Small Express API for demonstrating secure CI/CD pipeline design.",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "express": "5.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.9.1",
+    "supertest": "7.1.4"
+  }
+}
