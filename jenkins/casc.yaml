@@ -35,7 +35,8 @@ credentials:
               password: ${DEMO_GITHUB_TOKEN}
 
 jobs:
-  - script: >
+  - script: |
+      def githubToken = System.getenv('DEMO_GITHUB_TOKEN')
       multibranchPipelineJob('secure-software-delivery') {
         displayName('secure-software-delivery')
         branchSources {
@@ -45,7 +46,9 @@ jobs:
                 id('secure-software-delivery-github')
                 configuredByUrl(true)
                 repositoryUrl('https://github.com/IamRitz/secure-software-delivery.git')
-                credentialsId('github-demo-pat')
+                if (githubToken && githubToken != 'unset') {
+                  credentialsId('github-demo-pat')
+                }
                 repoOwner('IamRitz')
                 repository('secure-software-delivery')
                 traits {
