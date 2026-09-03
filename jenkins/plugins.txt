@@ -1,0 +1,7 @@
+pipeline-model-definition
+workflow-multibranch
+docker-workflow
+configuration-as-code
+github-branch-source
+job-dsl
+git

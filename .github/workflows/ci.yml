@@ -7,8 +7,9 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: '17 3 * * 1'
   workflow_dispatch:
-  # A weekly trigger will be added when scheduled security checks exist.
 
 permissions:
   contents: read
@@ -21,6 +22,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -37,3 +40,54 @@ jobs:
 
       - name: Test
         run: npm test
+
+  secret-scanning:
+    name: Secret scanning (report only)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out full repository history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js for report normalization
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Create report directory
+        run: mkdir -p reports
+
+      - name: Run Gitleaks (report only)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/reports:/reports" \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --platform github --no-banner --redact=100 --report-format json \
+            --report-path /reports/gitleaks.json --exit-code 0
+
+      - name: Run TruffleHog (report only)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
+            git file:///repo --json --no-update \
+            --results=verified,unverified,unknown --no-fail \
+            --fail-on-scan-errors > reports/trufflehog.raw.jsonl
+          node security/scripts/normalize-trufflehog.mjs \
+            reports/trufflehog.raw.jsonl reports/trufflehog.json
+
+      - name: Upload secret scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: secret-scan-reports
+          path: |
+            reports/gitleaks.json
+            reports/trufflehog.json
+          if-no-files-found: error
+          retention-days: 14
