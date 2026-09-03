@@ -8,9 +8,10 @@ CI/CD pipeline in GitHub Actions and Jenkins.
 > holding. Therefore, untrusted install/build code must never run in a job that
 > holds AWS, ECR, or deployment credentials.
 
-That principle defines the future pipeline boundary. This repository currently
-contains the application plus Phase 2 tests, linting, and container packaging.
-No CI/CD or cloud deployment has been added yet.
+That principle defines the pipeline boundary. GitHub Actions and Jenkins run
+tests plus secret, dependency, and static-analysis scans without cloud or
+deployment credentials. A shared fail-closed security gate evaluates their
+reports before any future build or deployment work can begin.
 
 ## Requirements
 
@@ -61,3 +62,21 @@ Data is intentionally in memory and resets whenever the process restarts.
 docker build -t secure-software-delivery:phase2 .
 docker run --rm -p 3000:3000 secure-software-delivery:phase2
 ```
+
+## Reproduce security checks locally
+
+The Make targets use the same digest-pinned scanner images, named rulesets,
+flags, report paths, policy, and gate script as CI:
+
+```sh
+make secrets       # Gitleaks and TruffleHog
+make dependencies  # npm audit and OSV-Scanner
+make sast          # Semgrep OSS
+make security      # all scanner targets above
+make gate          # evaluate the reports currently in reports/
+```
+
+Run the complete clean-repository path with `make security && make gate`.
+The gate exits zero for `PASS` and `PASS-WITH-EXCEPTIONS`, and non-zero for
+`BLOCK`. Its detailed decision and separately tracked exceptions are written
+to `reports/security-gate.json` and `reports/gate-exceptions.json`.

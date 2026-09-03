@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   secret-scanning:
-    name: Secret scanning (report only)
+    name: Secret scanning
     runs-on: ubuntu-latest
 
     steps:
@@ -67,7 +67,7 @@ jobs:
           retention-days: 14
 
   dependency-scanning:
-    name: Dependency scanning (report only)
+    name: Dependency scanning
     runs-on: ubuntu-latest
 
     steps:
@@ -93,7 +93,7 @@ jobs:
           set -e
           node security/scripts/validate-dependency-report.mjs \
             npm-audit reports/npm-audit.json
-          echo "npm audit exit code: $audit_status (findings do not block Phase 6)"
+          echo "npm audit exit code: $audit_status (security gate evaluates findings)"
 
       - name: Run OSV-Scanner (report only)
         run: |
@@ -107,7 +107,7 @@ jobs:
           set -e
           node security/scripts/validate-dependency-report.mjs \
             osv-scanner reports/osv-scanner.json
-          echo "OSV-Scanner exit code: $osv_status (findings do not block Phase 6)"
+          echo "OSV-Scanner exit code: $osv_status (security gate evaluates findings)"
 
       - name: Upload dependency scan reports
         if: always()
@@ -121,7 +121,7 @@ jobs:
           retention-days: 14
 
   sast:
-    name: SAST (report only)
+    name: SAST
     runs-on: ubuntu-latest
 
     steps:
@@ -154,7 +154,7 @@ jobs:
             --disable-version-check \
             src
           node security/scripts/validate-semgrep-report.mjs reports/semgrep.json
-          echo "Semgrep findings are informational and do not block Phase 7"
+          echo "Semgrep report is ready for the security gate"
 
       - name: Upload SAST report
         if: always()
@@ -162,5 +162,61 @@ jobs:
         with:
           name: sast-reports
           path: reports/semgrep.json
+          if-no-files-found: error
+          retention-days: 14
+
+  security-gate:
+    name: security-gate
+    needs:
+      - secret-scanning
+      - dependency-scanning
+      - sast
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out gate policy and evaluator
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Download secret scan reports
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: secret-scan-reports
+          path: reports
+
+      - name: Download dependency scan reports
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependency-scan-reports
+          path: reports
+
+      - name: Download SAST report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sast-reports
+          path: reports
+
+      - name: Evaluate security policy
+        run: node security/scripts/security-gate.mjs
+
+      - name: Upload security gate decision
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: security-gate-results
+          path: |
+            reports/security-gate.json
+            reports/gate-exceptions.json
           if-no-files-found: error
           retention-days: 14

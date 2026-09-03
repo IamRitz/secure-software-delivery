@@ -63,10 +63,11 @@ curl -fsS '<branch-url>lastBuild/consoleText'
 
 The successful console log must show Checkout, parallel Gitleaks and
 TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Semgrep
-SAST, Install, Lint, and Test. Confirm all five JSON reports appear under
-**Build Artifacts**, then confirm `npm ci`, ESLint, and all tests complete
-successfully. Local command emulation is not a substitute for this controller
-result.
+SAST, Security Gate, Install, Lint, and Test. Confirm the five scanner reports,
+`security-gate.json`, and `gate-exceptions.json` appear under **Build
+Artifacts**, then confirm the gate prints `SECURITY GATE: PASS`, `npm ci`,
+ESLint, and all tests complete successfully. Local command emulation is not a
+substitute for this controller result.
 
 ## Tear down
 

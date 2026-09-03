@@ -13,7 +13,7 @@ CI but are not a trusted enforcement boundary.
 **TruffleHog** combines pattern matching with live verification. For supported
 credential types it contacts the credential provider and distinguishes a
 working (`Verified: true`) credential from an unverified or unknown match.
-That distinction will drive Phase 8's verified-secret blocking rule; Gitleaks
+That distinction drives the gate's verified-secret blocking rule; Gitleaks
 alone cannot establish whether a detected credential is live.
 
 TruffleHog's outbound verifier calls are not uses of the pipeline's AWS, ECR,
@@ -21,10 +21,10 @@ or deployment identity. The secret-scanning job has none of those credentials;
 the scanner is testing whether an unrelated value found in repository content
 is accepted by its provider.
 
-Phase 5 is intentionally **report-only**. Findings are logged and retained as
-redacted JSON artifacts, but do not fail either CI system. This is the rollout
-model's log-first phase; blocking policy is introduced only after findings can
-be baselined and the Phase 8 gate exists.
+The scanner steps produce reports without interpreting policy. The shared
+security gate now consumes those reports and blocks verified secrets while
+logging unverified pattern matches. Keeping collection separate from policy
+ensures GitHub Actions and Jenkins make the same decision.
 
 GitHub Actions stores both reports in the `secret-scan-reports` artifact.
 Jenkins archives `reports/gitleaks.json` and `reports/trufflehog.json` on their
@@ -39,16 +39,18 @@ ecosystem-specific view without installing dependencies.
 
 **OSV-Scanner** queries OSV.dev, which aggregates advisories across sources and
 ecosystems. Its native JSON retains each advisory's `id`, including the
-distinct `MAL-` prefix used for known-malicious package advisories. Phase 8 can
-therefore treat malicious packages as a separate policy path that blocks
+distinct `MAL-` prefix used for known-malicious package advisories. The gate
+therefore treats malicious packages as a separate policy path that blocks
 regardless of severity, rather than treating them as ordinary vulnerable
 dependencies.
 
 Both Phase 6 tools scan the committed lockfile directly. Their native JSON is
 archived unchanged as `npm-audit.json` and `osv-scanner.json`; no advisory IDs,
-fix information, or severity data are discarded. Findings are report-only in
-this phase. GitHub Actions publishes them in `dependency-scan-reports`, while
-Jenkins exposes both files under the build's archived artifacts.
+fix information, or severity data are discarded. GitHub Actions publishes them
+in `dependency-scan-reports`, while Jenkins exposes both files under the
+build's archived artifacts. The gate uses npm's `fixAvailable` and OSV's
+affected-range `fixed` events to separate blocking fixable High/Critical
+findings from visible non-blocking exceptions.
 
 The security workflow and Jenkins pipeline run weekly because advisory data
 can change even when the lockfile does not. The standalone application checks
@@ -74,9 +76,9 @@ otherwise version the resolved rules as a further reproducibility measure.
 Semgrep writes native JSON to `reports/semgrep.json`. The report validator
 requires the expected result, error, and scanned-path structures and rejects
 any scan errors, so malformed, truncated, or operationally failed output
-cannot masquerade as a clean scan. Findings remain informational in Phase 7.
-GitHub Actions retains the report in `sast-reports`; Jenkins archives the same
-file on the build.
+cannot masquerade as a clean scan. GitHub Actions retains the report in
+`sast-reports`; Jenkins archives the same file on the build. The security gate
+then blocks new High/Critical matches and logs baseline-known backlog.
 
 ### Known-finding baseline
 
@@ -102,3 +104,22 @@ An AI-based checker alongside Semgrep is a potential complementary control,
 but it is deliberately deferred beyond the core 12-phase POC, as is broader
 OWASP-style benchmarking. It is a future extension, not a missing Phase 7
 requirement.
+
+## Local reproduction
+
+The root `Makefile` is the canonical local wrapper for the same commands used
+by both CI systems:
+
+```sh
+make secrets
+make dependencies
+make sast
+make security
+make gate
+```
+
+Scanner output is written beneath the ignored `reports/` directory. `make
+gate` never scans implicitly; it evaluates exactly the reports present, so a
+security engineer can download CI artifacts and reproduce the policy decision
+without rerunning a scanner. Missing or malformed reports produce `BLOCK`, not
+an apparent clean result. See `docs/gating.md` for the complete decision model.
