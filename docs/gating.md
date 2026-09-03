@@ -72,3 +72,20 @@ gh api repos/IamRitz/secure-software-delivery/branches/main/protection/required_
 ```
 
 The response's `contexts` or `checks` list must contain `security-gate`.
+
+### Phase 8 enforced configuration
+
+The repository was changed from private to public so GitHub Free could enforce
+branch protection; leaving a visible but unenforced private-repository rule was
+not accepted as verification. The saved `main` rule has:
+
+- pull requests required, with zero approving reviews for this solo POC;
+- the exact `security-gate` status check required before merge;
+- administrator bypass disabled;
+- force pushes disabled; and
+- branch deletion disabled.
+
+The setting was confirmed in GitHub after the Phase 8 pull-request workflow
+registered a successful `security-gate` check. If the repository becomes
+private again, its account plan must support enforcement on private
+repositories; otherwise this control stops being an enforcement boundary.
