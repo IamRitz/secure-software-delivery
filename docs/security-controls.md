@@ -116,6 +116,7 @@ make dependencies
 make sast
 make security
 make gate
+make image-gate
 ```
 
 Scanner output is written beneath the ignored `reports/` directory. `make
@@ -123,3 +124,18 @@ gate` never scans implicitly; it evaluates exactly the reports present, so a
 security engineer can download CI artifacts and reproduce the policy decision
 without rerunning a scanner. Missing or malformed reports produce `BLOCK`, not
 an apparent clean result. See `docs/gating.md` for the complete decision model.
+
+## Container image scanning
+
+ECR basic scan-on-push inspects operating-system packages in the built image.
+This must remain separate from lockfile dependency scanning: the base image's
+Alpine packages do not appear in `package-lock.json`, so npm audit and
+OSV-Scanner cannot see them. Amazon Inspector enhanced continuous scanning is
+a documented production upgrade; basic scanning is sufficient for this POC.
+
+`poll-ecr-scan.mjs` polls `describe-image-scan-findings` and writes normalized
+JSON without making the deploy decision. `image-gate.mjs` applies the shared
+policy: Critical/High block deployment, Medium/Low log. Missing, malformed,
+incomplete, or structurally inconsistent results also block deployment. The
+decision is written to `reports/image-gate.json` and its process exit code is
+used directly by both CI systems.

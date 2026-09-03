@@ -20,6 +20,21 @@ Only the security workflow has a Monday weekly schedule. This catches
 advisories published for already-locked dependencies and refreshes the SAST
 report without pointlessly scheduling the standalone application workflow.
 
+For pull requests, the security workflow ends at `security-gate`: no image is
+built and no AWS job is eligible. For a push or manual dispatch on `main`, a
+passing gate starts `container-build`. That job has only `contents: read`,
+builds the Dockerfile without AWS credentials, and uploads the image as a
+one-day artifact. `aws-configuration` then checks the required repository
+variables. If any are absent, it emits an explicit notice and `aws-delivery`
+shows as skipped.
+
+`aws-delivery` is the only job with `id-token: write`. It downloads the
+already-built image before obtaining a short-lived AWS identity through OIDC,
+then performs ECR push, image scan, the fail-closed deploy gate, and ECS
+deployment. This artifact handoff is intentional: Docker's `npm ci` build
+layer never runs while AWS credentials are present. No workflow-level AWS
+permission or static AWS access key is used. See `docs/aws-setup.md`.
+
 Third-party actions are pinned to full commit SHAs rather than movable tags.
 The adjacent version comments retain readability while the immutable reference
 prevents a release tag from silently resolving to different action code.

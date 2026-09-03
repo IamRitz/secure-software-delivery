@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VALID_ACTIONS = new Set(['BLOCK', 'EXCEPTION', 'LOG']);
+const VALID_ACTIONS = new Set(['BLOCK', 'BLOCK_DEPLOY', 'EXCEPTION', 'LOG']);
 
 const DEFAULT_PATHS = {
   policy: 'security/policy.yaml',
@@ -31,7 +31,7 @@ function parseScalar(value) {
   return value.replace(/^(['"])(.*)\1$/, '$2');
 }
 
-function parseSimplePolicy(source) {
+export function parseSimplePolicy(source) {
   const policy = {};
   const stack = [{ indent: -1, value: policy }];
 
@@ -72,7 +72,7 @@ function policyValue(policy, path) {
   return value;
 }
 
-function policyAction(policy, path) {
+export function policyAction(policy, path) {
   const action = policyValue(policy, path);
   assert(VALID_ACTIONS.has(action), `policy ${path} has invalid action ${action}`);
   return action;

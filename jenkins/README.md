@@ -61,13 +61,18 @@ curl -fsS '<branch-url>lastBuild/api/json?tree=number,result,building,url'
 curl -fsS '<branch-url>lastBuild/consoleText'
 ```
 
-The successful console log must show Checkout, parallel Gitleaks and
-TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Semgrep
-SAST, Security Gate, Install, Lint, and Test. Confirm the five scanner reports,
+On a feature branch, the successful console log must show Checkout, parallel
+Gitleaks and TruffleHog scans, parallel npm audit and OSV-Scanner lockfile
+scans, Semgrep SAST, Security Gate, Install, Lint, and Test; all post-gate
+delivery stages are skipped because only `main` can build. After merging,
+verify a non-scheduled `main` build also completes Docker Build. With the default
+`ENABLE_AWS_DELIVERY=false`, it must print the explicit AWS-not-configured
+message and show ECR Push, Image Scan, Deploy Gate, and Deploy as skipped.
+Confirm the five scanner reports,
 `security-gate.json`, and `gate-exceptions.json` appear under **Build
 Artifacts**, then confirm the gate prints `SECURITY GATE: PASS`, `npm ci`,
-ESLint, and all tests complete successfully. Local command emulation is not a
-substitute for this controller result.
+ESLint, all tests, and the Docker build complete successfully. Local command
+emulation is not a substitute for this controller result.
 
 ## Tear down
 
@@ -78,6 +83,7 @@ docker compose -f jenkins/docker-compose.yml down -v
 unset DEMO_GITHUB_TOKEN
 ```
 
-Later phases can reuse this bring-up to verify Docker, ECR, and deployment
-stages after those stages exist. The configuration is reusable, but the
-controller is still ephemeral and must not run constantly.
+Future verification can reuse this bring-up for real ECR and deployment runs
+after AWS exists and the credentials documented in `docs/aws-setup.md` are
+created. The configuration is reusable, but the controller is still ephemeral
+and must not run constantly.

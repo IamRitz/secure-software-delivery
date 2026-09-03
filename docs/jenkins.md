@@ -24,6 +24,19 @@ container: `node:22.23.2-alpine3.24`.
    `npm install`.
 7. **Lint** runs `npm run lint`.
 8. **Test** runs the offline test suite with `npm test`.
+9. **Docker Build** builds the Phase 2 Dockerfile without AWS credentials on a
+   non-scheduled `main` build.
+10. **AWS Configuration** states whether delivery is enabled. The default is
+    disabled and emits a visible skip explanation.
+11. **ECR Push**, **Image Scan**, **Deploy Gate**, and **Deploy** run only when
+    `ENABLE_AWS_DELIVERY` is explicitly enabled. The image gate calls the same
+    fail-closed Node script used by GitHub Actions.
+
+The image-scan polling helper runs in an exact-version, digest-pinned Node 22
+slim container with the controller's Docker client and socket mounted so it
+can invoke the digest-pinned AWS CLI container. This avoids installing tooling
+while AWS credentials are present. Application execution remains on the exact
+`node:22.23.2-alpine3.24` runtime used by the Dockerfile and GitHub checks.
 
 The shell steps use Jenkins' default fail-fast behavior. A non-zero result from
 the gate, install, lint, or test fails its stage and the build; there is no
@@ -54,14 +67,24 @@ webhooks or periodic branch-source polling; unlike GitHub Actions' built-in
 
 ## Credentials
 
-This pipeline binds no Jenkins credentials. Checkout, installation, linting,
-and tests receive no AWS, ECR, Docker-registry, or deployment secrets. A
-private repository may require a server-side SCM credential solely so the
-Multibranch job can fetch the repository; it is branch-source configuration,
-not a credential exposed by this pipeline to `npm ci` or application code.
+Checkout, scanning, the security gate, installation, linting, tests, and the
+Docker build bind no AWS, ECR, registry, or deployment credentials. A private
+repository may require a server-side SCM credential solely for Multibranch
+discovery; JCasC prevents it from entering build environments.
 
-Later phases may bind credentials only inside the specific image-push or
-deployment stages that require them. No such stages exist in Phase 4.
+When AWS delivery is enabled, ECR push and scan bind only the
+`jenkins-aws-ecr` username/password credential, mapping the access-key ID to
+the username and secret key to the password. Deploy binds a separate
+`jenkins-aws-deploy` credential. Keeping these identities separate permits an
+ECR-only policy for the former and an ECS-update-only policy for the latter.
+The credentials exist only inside their `withCredentials` blocks.
+
+Static IAM access keys are a deliberate Jenkins tradeoff because a controller
+does not receive GitHub-hosted runner OIDC tokens. Prefer workload identity or
+short-lived credentials when the Jenkins platform supports them. For this
+throwaway POC, store keys only in Jenkins Credentials, rotate them, and grant
+the minimal policies in `docs/aws-setup.md`; never add them to parameters,
+JCasC, source files, or controller-start environment variables.
 
 ## Verification status
 
@@ -91,4 +114,11 @@ the demo's least-privilege intent.
 The Jenkinsfile has its own Monday `cron` trigger to rerun the pipeline and
 refresh advisory results. This is separate from the JCasC Multibranch job's
 one-minute folder scan, which discovers branch revisions but is not a periodic
-pipeline security run.
+pipeline security run. Scheduled and non-`main` builds stop before Docker, so
+pull requests and weekly refreshes remain checks-and-gate only.
+
+Phase 9 verification uses the default `ENABLE_AWS_DELIVERY=false`. A genuine
+Jenkins run must show Docker Build succeeding, AWS Configuration printing the
+not-configured message, and all four AWS-dependent stages as skipped. ECR,
+image scan, and ECS deployment remain unverified until real AWS resources and
+both documented Jenkins credentials exist.
