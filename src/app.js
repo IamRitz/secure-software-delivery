@@ -12,6 +12,7 @@ const products = [
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Create an Express application with the following endpoints:
 export function createApp() {
   const app = express();
   const users = initialUsers.map((user) => ({ ...user }));
