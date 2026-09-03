@@ -1,18 +1,21 @@
 # GitHub Actions
 
-The workflow runs for pull requests targeting `main`, pushes to `main`, and
-manual dispatches. Phase 5 adds a Monday weekly schedule because security
-scanning now exists; rerunning unchanged tests and lint alone would not have
-justified a schedule.
+The application workflow runs for pull requests targeting `main`, pushes to
+`main`, and manual dispatches. It has no schedule.
 
 The workflow has only `contents: read` permission. It installs the committed
 lockfile with `npm ci`, then runs ESLint and the offline test suite. It has no
 cloud credentials and performs no image build or deployment.
 
-The parallel `secret-scanning` job checks full repository history with
-digest-pinned Gitleaks and TruffleHog containers. Checkout credentials are not
-persisted. Findings are report-only in Phase 5, and redacted JSON reports are
-uploaded as the `secret-scan-reports` workflow artifact for 14 days.
+Security checks live together in `.github/workflows/security.yml`. Its
+`secret-scanning` and `dependency-scanning` jobs run in parallel with no job
+credentials and do not persist checkout credentials. Findings remain
+report-only. Redacted secret reports and native dependency reports are retained
+as workflow artifacts for 14 days.
+
+Only the security workflow has a Monday weekly schedule. This catches
+advisories published for already-locked dependencies without pointlessly
+rerunning the standalone application workflow on unchanged code.
 
 Third-party actions are pinned to full commit SHAs rather than movable tags.
 The adjacent version comments retain readability while the immutable reference

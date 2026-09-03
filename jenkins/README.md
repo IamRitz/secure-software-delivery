@@ -56,10 +56,10 @@ curl -fsS '<branch-url>lastBuild/consoleText'
 ```
 
 The successful console log must show Checkout, parallel Gitleaks and
-TruffleHog scans, Install, Lint, and Test. Confirm both redacted JSON reports
-appear under **Build Artifacts**, then confirm `npm ci`, ESLint, and all tests
-complete successfully. Local command emulation is not a substitute for this
-controller result.
+TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Install,
+Lint, and Test. Confirm all four JSON reports appear under **Build Artifacts**,
+then confirm `npm ci`, ESLint, and all tests complete successfully. Local
+command emulation is not a substitute for this controller result.
 
 ## Tear down
 
