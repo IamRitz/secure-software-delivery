@@ -53,3 +53,52 @@ Jenkins exposes both files under the build's archived artifacts.
 The security workflow and Jenkins pipeline run weekly because advisory data
 can change even when the lockfile does not. The standalone application checks
 workflow remains event-driven and has no cron schedule.
+
+## Static application security testing
+
+Semgrep OSS scans the application with two explicit Registry rulesets:
+
+- `p/owasp-top-ten` provides a concise, recognizable set of checks mapped to
+  common web-application risk categories.
+- `p/javascript` adds JavaScript-specific correctness and security checks that
+  are relevant to this Node.js service.
+
+The pipeline deliberately does not use `--config=auto`. Automatic selection
+can alter the chosen rules without a repository change, making a live demo
+harder to reproduce and explain. The named configurations make rule selection
+intentional and allow the same command to be run locally. The Semgrep runtime
+itself is pinned to the immutable digest for Semgrep OSS 1.176.0. Registry
+rules can still evolve upstream; a production-grade control would vendor or
+otherwise version the resolved rules as a further reproducibility measure.
+
+Semgrep writes native JSON to `reports/semgrep.json`. The report validator
+requires the expected result, error, and scanned-path structures and rejects
+any scan errors, so malformed, truncated, or operationally failed output
+cannot masquerade as a clean scan. Findings remain informational in Phase 7.
+GitHub Actions retains the report in `sast-reports`; Jenkins archives the same
+file on the build.
+
+### Known-finding baseline
+
+`security/baseline/semgrep-baseline.json` records findings formally accepted
+as pre-existing. The current baseline was generated from the clean Phase 7
+scan and is empty. Its fingerprints hash the rule ID, repository path, and
+matched source text, allowing Phase 8 to distinguish a known match from a new
+or changed one without storing vulnerable source snippets in the baseline.
+
+When the team intentionally accepts a future finding during the rollout's
+Tune phase, rerun the exact pinned Semgrep command, review every result, and
+generate a candidate baseline with:
+
+```sh
+node security/scripts/generate-semgrep-baseline.mjs reports/semgrep.json
+```
+
+Review the candidate before replacing the checked-in baseline. Baseline
+updates are policy decisions made through code review; CI must never update it
+automatically.
+
+An AI-based checker alongside Semgrep is a potential complementary control,
+but it is deliberately deferred beyond the core 12-phase POC, as is broader
+OWASP-style benchmarking. It is a future extension, not a missing Phase 7
+requirement.

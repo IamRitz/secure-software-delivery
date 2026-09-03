@@ -107,6 +107,34 @@ pipeline {
             }
         }
 
+        stage('SAST') {
+            steps {
+                sh 'mkdir -p reports'
+                script {
+                    docker.image('semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e').inside('--entrypoint=') {
+                        sh '''
+                            semgrep scan \
+                                --config p/owasp-top-ten \
+                                --config p/javascript \
+                                --json-output=reports/semgrep.json \
+                                --metrics=off \
+                                --disable-version-check \
+                                src
+                        '''
+                    }
+                    docker.image('node:22.23.2-alpine3.24').inside {
+                        sh 'node security/scripts/validate-semgrep-report.mjs reports/semgrep.json'
+                    }
+                    echo 'Semgrep findings are informational and do not block Phase 7'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/semgrep.json', allowEmptyArchive: false
+                }
+            }
+        }
+
         stage('Install') {
             agent {
                 docker {

@@ -14,10 +14,13 @@ container: `node:22.23.2-alpine3.24`.
 3. **Dependency scanning** runs `npm audit` and OSV-Scanner in parallel against
    `package-lock.json`, preserves their native JSON, and archives both reports.
    Phase 6 logs findings without failing the build.
-4. **Install** runs `npm ci` against the committed lockfile. It never uses
+4. **SAST** runs digest-pinned Semgrep OSS with the named `p/owasp-top-ten` and
+   `p/javascript` rulesets, validates its native JSON, and archives the report.
+   Phase 7 findings are report-only.
+5. **Install** runs `npm ci` against the committed lockfile. It never uses
    `npm install`.
-5. **Lint** runs `npm run lint`.
-6. **Test** runs the offline test suite with `npm test`.
+6. **Lint** runs `npm run lint`.
+7. **Test** runs the offline test suite with `npm test`.
 
 The shell steps use Jenkins' default fail-fast behavior. A non-zero result from
 install, lint, or test fails its stage and the build; there is no `catchError`,
