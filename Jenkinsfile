@@ -5,6 +5,10 @@ pipeline {
         skipDefaultCheckout(true)
     }
 
+    triggers {
+        cron('H 6 * * 1')
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -45,6 +49,58 @@ pipeline {
                     post {
                         always {
                             archiveArtifacts artifacts: 'reports/trufflehog.json', allowEmptyArchive: false
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Dependency scanning') {
+            parallel {
+                stage('npm audit') {
+                    steps {
+                        sh 'mkdir -p reports'
+                        script {
+                            docker.image('node:22.23.2-alpine3.24').inside {
+                                sh '''
+                                    set +e
+                                    npm audit --json --package-lock-only > reports/npm-audit.json
+                                    audit_status=$?
+                                    set -e
+                                    node security/scripts/validate-dependency-report.mjs npm-audit reports/npm-audit.json
+                                    echo "npm audit exit code: $audit_status (findings do not block Phase 6)"
+                                '''
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/npm-audit.json', allowEmptyArchive: false
+                        }
+                    }
+                }
+
+                stage('OSV-Scanner') {
+                    steps {
+                        sh 'mkdir -p reports'
+                        script {
+                            docker.image('ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475').inside('--entrypoint=') {
+                                sh '''
+                                    set +e
+                                    /osv-scanner scan source --lockfile=package-lock.json --format=json > reports/osv-scanner.json
+                                    osv_status=$?
+                                    set -e
+                                    echo "OSV-Scanner exit code: $osv_status (findings do not block Phase 6)"
+                                '''
+                            }
+                            docker.image('node:22.23.2-alpine3.24').inside {
+                                sh 'node security/scripts/validate-dependency-report.mjs osv-scanner reports/osv-scanner.json'
+                            }
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/osv-scanner.json', allowEmptyArchive: false
                         }
                     }
                 }
