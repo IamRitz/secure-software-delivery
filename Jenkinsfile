@@ -68,7 +68,7 @@ pipeline {
                                     audit_status=$?
                                     set -e
                                     node security/scripts/validate-dependency-report.mjs npm-audit reports/npm-audit.json
-                                    echo "npm audit exit code: $audit_status (findings do not block Phase 6)"
+                                    echo "npm audit exit code: $audit_status (security gate evaluates findings)"
                                 '''
                             }
                         }
@@ -90,7 +90,7 @@ pipeline {
                                     /osv-scanner scan source --lockfile=package-lock.json --format=json > reports/osv-scanner.json
                                     osv_status=$?
                                     set -e
-                                    echo "OSV-Scanner exit code: $osv_status (findings do not block Phase 6)"
+                                    echo "OSV-Scanner exit code: $osv_status (security gate evaluates findings)"
                                 '''
                             }
                             docker.image('node:22.23.2-alpine3.24').inside {
@@ -125,12 +125,27 @@ pipeline {
                     docker.image('node:22.23.2-alpine3.24').inside {
                         sh 'node security/scripts/validate-semgrep-report.mjs reports/semgrep.json'
                     }
-                    echo 'Semgrep findings are informational and do not block Phase 7'
+                    echo 'Semgrep report is ready for the security gate'
                 }
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'reports/semgrep.json', allowEmptyArchive: false
+                }
+            }
+        }
+
+        stage('Security Gate') {
+            steps {
+                script {
+                    docker.image('node:22.23.2-alpine3.24').inside {
+                        sh 'node security/scripts/security-gate.mjs'
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/security-gate.json,reports/gate-exceptions.json', allowEmptyArchive: false
                 }
             }
         }

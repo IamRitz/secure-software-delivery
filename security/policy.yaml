@@ -1,0 +1,34 @@
+# POC defaults: intentionally simple and readable. Teams can adjust these
+# thresholds later; this demonstration does not need an enterprise policy engine.
+secrets:
+  verified: BLOCK
+  unverified: LOG
+
+dependencies:
+  critical_with_fix: BLOCK
+  high_with_fix: BLOCK
+  critical_no_fix: EXCEPTION
+  high_no_fix: EXCEPTION
+  medium: LOG
+  low: LOG
+  malicious_package: BLOCK # regardless of severity
+
+sast:
+  critical_new: BLOCK
+  high_new: BLOCK
+  critical_existing: LOG # baseline-known; do not block existing backlog
+  high_existing: LOG
+  medium: LOG
+  low: LOG
+
+severity_mapping:
+  # npm audit reports info/low/moderate/high/critical; the gate uses those values.
+  osv_cvss_thresholds:
+    critical: 9.0
+    high: 7.0
+    medium: 4.0
+    # Scores below 4.0 are low.
+  semgrep_severity:
+    ERROR: high
+    WARNING: medium
+    INFO: low

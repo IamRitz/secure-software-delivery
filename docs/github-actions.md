@@ -9,9 +9,12 @@ cloud credentials and performs no image build or deployment.
 
 Security checks live together in `.github/workflows/security.yml`. Its
 `secret-scanning`, `dependency-scanning`, and `sast` jobs run in parallel with
-no job credentials and do not persist checkout credentials. Findings remain
-report-only. Redacted secret reports, native dependency reports, and Semgrep
-JSON are retained as workflow artifacts for 14 days.
+no job credentials and do not persist checkout credentials. They collect
+reports without making independent policy decisions. The dependent
+`security-gate` job downloads every artifact and calls the shared gate script;
+its exit code directly determines the required check result. Redacted secret
+reports, native dependency reports, Semgrep JSON, and gate decisions are
+retained as workflow artifacts for 14 days.
 
 Only the security workflow has a Monday weekly schedule. This catches
 advisories published for already-locked dependencies and refreshes the SAST
@@ -23,7 +26,8 @@ prevents a release tag from silently resolving to different action code.
 
 ## Branch protection
 
-Once `Application checks` is configured as a required status check for `main`
-in GitHub branch protection, a failing `checks` job will block pull-request
-merges. Branch protection is intentionally not configured yet: it is a
-repository setting and should be finalized after the security gate exists.
+The `security-gate` job is the security enforcement status. `main` branch
+protection requires this exact check before merge; scanner jobs remain report
+producers rather than three separate policy implementations. The repository
+setting and its manual verification procedure are documented in
+`docs/gating.md`.

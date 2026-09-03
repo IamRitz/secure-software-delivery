@@ -16,15 +16,19 @@ container: `node:22.23.2-alpine3.24`.
    Phase 6 logs findings without failing the build.
 4. **SAST** runs digest-pinned Semgrep OSS with the named `p/owasp-top-ten` and
    `p/javascript` rulesets, validates its native JSON, and archives the report.
-   Phase 7 findings are report-only.
-5. **Install** runs `npm ci` against the committed lockfile. It never uses
+5. **Security Gate** calls the shared Node evaluator against all five scanner
+   reports and the checked-in Semgrep baseline. Its process exit code directly
+   fails the pipeline on `BLOCK`; Jenkins does not reimplement policy in
+   Groovy. The decision and exception files are archived even on failure.
+6. **Install** runs `npm ci` against the committed lockfile. It never uses
    `npm install`.
-6. **Lint** runs `npm run lint`.
-7. **Test** runs the offline test suite with `npm test`.
+7. **Lint** runs `npm run lint`.
+8. **Test** runs the offline test suite with `npm test`.
 
 The shell steps use Jenkins' default fail-fast behavior. A non-zero result from
-install, lint, or test fails its stage and the build; there is no `catchError`,
-`returnStatus`, or other mechanism that could turn a failure into success.
+the gate, install, lint, or test fails its stage and the build; there is no
+`catchError`, `returnStatus`, or other mechanism that could turn a failure into
+success.
 
 ## One-time Jenkins setup
 
