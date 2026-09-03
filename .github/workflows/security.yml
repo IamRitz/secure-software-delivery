@@ -119,3 +119,48 @@ jobs:
             reports/osv-scanner.json
           if-no-files-found: error
           retention-days: 14
+
+  sast:
+    name: SAST (report only)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js for report validation
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Create report directory
+        run: mkdir -p reports
+
+      - name: Run Semgrep OSS (report only)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$GITHUB_WORKSPACE/reports:/reports" \
+            -w /src \
+            semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e \
+            semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/javascript \
+            --json-output=/reports/semgrep.json \
+            --metrics=off \
+            --disable-version-check \
+            src
+          node security/scripts/validate-semgrep-report.mjs reports/semgrep.json
+          echo "Semgrep findings are informational and do not block Phase 7"
+
+      - name: Upload SAST report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sast-reports
+          path: reports/semgrep.json
+          if-no-files-found: error
+          retention-days: 14

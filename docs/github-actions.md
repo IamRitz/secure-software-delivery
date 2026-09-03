@@ -8,14 +8,14 @@ lockfile with `npm ci`, then runs ESLint and the offline test suite. It has no
 cloud credentials and performs no image build or deployment.
 
 Security checks live together in `.github/workflows/security.yml`. Its
-`secret-scanning` and `dependency-scanning` jobs run in parallel with no job
-credentials and do not persist checkout credentials. Findings remain
-report-only. Redacted secret reports and native dependency reports are retained
-as workflow artifacts for 14 days.
+`secret-scanning`, `dependency-scanning`, and `sast` jobs run in parallel with
+no job credentials and do not persist checkout credentials. Findings remain
+report-only. Redacted secret reports, native dependency reports, and Semgrep
+JSON are retained as workflow artifacts for 14 days.
 
 Only the security workflow has a Monday weekly schedule. This catches
-advisories published for already-locked dependencies without pointlessly
-rerunning the standalone application workflow on unchanged code.
+advisories published for already-locked dependencies and refreshes the SAST
+report without pointlessly scheduling the standalone application workflow.
 
 Third-party actions are pinned to full commit SHAs rather than movable tags.
 The adjacent version comments retain readability while the immutable reference

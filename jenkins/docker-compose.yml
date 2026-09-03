@@ -8,7 +8,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       CASC_JENKINS_CONFIG: /var/jenkins_home/casc.yaml
-      DEMO_GITHUB_TOKEN: ${DEMO_GITHUB_TOKEN:?set DEMO_GITHUB_TOKEN before starting Jenkins}
+      DEMO_GITHUB_TOKEN: ${DEMO_GITHUB_TOKEN:-unset}
       JAVA_OPTS: -Djenkins.install.runSetupWizard=false
     volumes:
       - jenkins_home:/var/jenkins_home

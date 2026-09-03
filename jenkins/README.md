@@ -24,6 +24,12 @@ repository or a Compose environment file:
 export DEMO_GITHUB_TOKEN='<read-only GitHub PAT>'
 ```
 
+Only `docker compose up` needs a real token for private-repository discovery.
+Compose defaults the variable to the inert string `unset`, so read-only
+commands such as `config` and `ps`, and teardown with `down -v`, work after the
+shell variable has been unset. Starting the controller with that default will
+not authenticate to a private repository.
+
 JCasC reads `${DEMO_GITHUB_TOKEN}` when the container starts, stores it as a
 Jenkins username/password credential for branch discovery, and overrides the
 same variable to an empty value in build-node environments. This keeps the
@@ -56,10 +62,11 @@ curl -fsS '<branch-url>lastBuild/consoleText'
 ```
 
 The successful console log must show Checkout, parallel Gitleaks and
-TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Install,
-Lint, and Test. Confirm all four JSON reports appear under **Build Artifacts**,
-then confirm `npm ci`, ESLint, and all tests complete successfully. Local
-command emulation is not a substitute for this controller result.
+TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Semgrep
+SAST, Install, Lint, and Test. Confirm all five JSON reports appear under
+**Build Artifacts**, then confirm `npm ci`, ESLint, and all tests complete
+successfully. Local command emulation is not a substitute for this controller
+result.
 
 ## Tear down
 
