@@ -31,6 +31,11 @@ and `ps`, plus teardown with `down -v`, work after the shell variable has been
 unset. If the repository becomes private, starting with that default cannot
 authenticate and a read-only token must be exported first.
 
+The controller uses Jenkins' **Throttle at/near rate limit** strategy. This is
+appropriate for one small, infrequently scanned demo repository and avoids the
+multi-minute request spreading intended for busy shared controllers; GitHub's
+real API limit is still enforced.
+
 JCasC reads `${DEMO_GITHUB_TOKEN}` when the container starts, stores it as a
 Jenkins username/password credential for branch discovery, and overrides the
 same variable to an empty value in build-node environments. This keeps the
