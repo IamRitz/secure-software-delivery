@@ -17,7 +17,7 @@ secrets: reports
 		-v "$(CURDIR):/repo:ro" \
 		-v "$(CURDIR)/reports:/reports" \
 		$(GITLEAKS_IMAGE) \
-		git /repo --config /repo/.gitleaks.toml --platform github \
+		git /repo --config /repo/.gitleaks.toml --log-opts=HEAD --platform github \
 		--no-banner --redact=100 --report-format json \
 		--report-path /reports/gitleaks.json --exit-code 0
 	docker run --rm \
@@ -57,6 +57,7 @@ sast: reports
 		semgrep scan \
 		--config p/owasp-top-ten \
 		--config p/javascript \
+		--config security/semgrep-rules.yml \
 		--json-output=/reports/semgrep.json \
 		--metrics=off \
 		--disable-version-check \

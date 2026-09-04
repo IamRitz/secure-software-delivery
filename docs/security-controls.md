@@ -66,12 +66,16 @@ workflow remains event-driven and has no cron schedule.
 
 ## Static application security testing
 
-Semgrep OSS scans the application with two explicit Registry rulesets:
+Semgrep OSS scans the application with two explicit Registry rulesets and one
+repository-versioned rule file:
 
 - `p/owasp-top-ten` provides a concise, recognizable set of checks mapped to
   common web-application risk categories.
 - `p/javascript` adds JavaScript-specific correctness and security checks that
   are relevant to this Node.js service.
+- `security/semgrep-rules.yml` is a repository-versioned high-confidence rule
+  for request-data-to-command-shell injection. Unlike Registry content, its
+  exact behavior changes only through code review in this repository.
 
 The pipeline deliberately does not use `--config=auto`. Automatic selection
 can alter the chosen rules without a repository change, making a live demo

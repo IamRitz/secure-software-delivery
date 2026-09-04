@@ -43,7 +43,7 @@ pipeline {
                         sh 'mkdir -p reports'
                         script {
                             docker.image('ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f').inside('--entrypoint=') {
-                                sh 'gitleaks git . --config .gitleaks.toml --platform github --no-banner --redact=100 --report-format json --report-path reports/gitleaks.json --exit-code 0'
+                                sh 'gitleaks git . --config .gitleaks.toml --log-opts=HEAD --platform github --no-banner --redact=100 --report-format json --report-path reports/gitleaks.json --exit-code 0'
                             }
                         }
                     }
@@ -136,6 +136,7 @@ pipeline {
                             semgrep scan \
                                 --config p/owasp-top-ten \
                                 --config p/javascript \
+                                --config security/semgrep-rules.yml \
                                 --json-output=reports/semgrep.json \
                                 --metrics=off \
                                 --disable-version-check \
