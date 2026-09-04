@@ -89,7 +89,23 @@ jobs:
 
       - name: Run npm audit (report only)
         continue-on-error: true
-        run: npm audit --json --package-lock-only > reports/npm-audit.json
+        run: |
+          for attempt in 1 2 3; do
+            set +e
+            npm audit --json --package-lock-only > reports/npm-audit.json
+            audit_status=$?
+            set -e
+            if node security/scripts/validate-dependency-report.mjs \
+              npm-audit reports/npm-audit.json; then
+              echo "npm audit produced a valid report (scanner exit $audit_status)"
+              exit 0
+            fi
+            echo "npm audit report attempt $attempt was invalid; retrying" >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep 15
+            fi
+          done
+          exit 1
 
       - name: Validate npm audit report
         run: |
