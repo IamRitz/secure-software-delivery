@@ -88,28 +88,29 @@ jobs:
         run: mkdir -p reports
 
       - name: Run npm audit (report only)
+        continue-on-error: true
+        run: npm audit --json --package-lock-only > reports/npm-audit.json
+
+      - name: Validate npm audit report
         run: |
-          set +e
-          npm audit --json --package-lock-only > reports/npm-audit.json
-          audit_status=$?
-          set -e
           node security/scripts/validate-dependency-report.mjs \
             npm-audit reports/npm-audit.json
-          echo "npm audit exit code: $audit_status (security gate evaluates findings)"
+          echo "npm audit report is valid; the security gate evaluates findings"
 
       - name: Run OSV-Scanner (report only)
+        continue-on-error: true
         run: |
-          set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
             scan source --lockfile=/repo/package-lock.json --format=json \
             > reports/osv-scanner.json
-          osv_status=$?
-          set -e
+
+      - name: Validate OSV-Scanner report
+        run: |
           node security/scripts/validate-dependency-report.mjs \
             osv-scanner reports/osv-scanner.json
-          echo "OSV-Scanner exit code: $osv_status (security gate evaluates findings)"
+          echo "OSV-Scanner report is valid; the security gate evaluates findings"
 
       - name: Upload dependency scan reports
         if: always()
