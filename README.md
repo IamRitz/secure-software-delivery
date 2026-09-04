@@ -79,12 +79,19 @@ make sast          # Semgrep OSS
 make security      # all scanner targets above
 make gate          # evaluate the reports currently in reports/
 make image-gate    # evaluate reports/ecr-image-scan.json before deployment
+make demo-malicious-package  # synthetic gate-only BLOCK; installs nothing
+make demo-dependency-no-fix  # synthetic PASS-WITH-EXCEPTIONS
 ```
 
 Run the complete clean-repository path with `make security && make gate`.
 The gate exits zero for `PASS` and `PASS-WITH-EXCEPTIONS`, and non-zero for
 `BLOCK`. Its detailed decision and separately tracked exceptions are written
 to `reports/security-gate.json` and `reports/gate-exceptions.json`.
+
+Safe, inert fixtures for live BLOCK-then-PASS demonstrations live under
+[`security/fixtures/`](security/fixtures/). Follow the copy-pasteable branch,
+activation, cleanup, and synthetic-input commands in
+[`docs/demo.md`](docs/demo.md). Activated demo branches must never be merged.
 
 AWS-dependent ECR push, image scan, and ECS deployment are implemented but
 have not been run against real infrastructure. See

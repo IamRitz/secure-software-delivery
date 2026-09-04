@@ -3,6 +3,8 @@
 secrets:
   verified: BLOCK
   unverified: LOG
+  # Safe demo-only marker: never claim that a dummy value is provider-verified.
+  demo_dummy: BLOCK
 
 dependencies:
   critical_with_fix: BLOCK

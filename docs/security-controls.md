@@ -21,6 +21,14 @@ or deployment identity. The secret-scanning job has none of those credentials;
 the scanner is testing whether an unrelated value found in repository content
 is accepted by its provider.
 
+Phase 10's secret fixture is deliberately **not** a provider credential, so it
+cannot truthfully exercise `secrets.verified`. A narrowly named Gitleaks rule
+detects the generated `DEMO_ONLY_SECRET_...` marker and routes only that rule ID
+to `secrets.demo_dummy: BLOCK`. The demo therefore proves scanner-to-gate
+blocking without manufacturing a working secret or mislabeling dummy data as
+TruffleHog-verified. The synthetic Phase 8 unit test remains the safe proof of
+the provider-verified policy path.
+
 The scanner steps produce reports without interpreting policy. The shared
 security gate now consumes those reports and blocks verified secrets while
 logging unverified pattern matches. Keeping collection separate from policy
@@ -117,6 +125,8 @@ make sast
 make security
 make gate
 make image-gate
+make demo-malicious-package
+make demo-dependency-no-fix
 ```
 
 Scanner output is written beneath the ignored `reports/` directory. `make
@@ -124,6 +134,21 @@ gate` never scans implicitly; it evaluates exactly the reports present, so a
 security engineer can download CI artifacts and reproduce the policy decision
 without rerunning a scanner. Missing or malformed reports produce `BLOCK`, not
 an apparent clean result. See `docs/gating.md` for the complete decision model.
+
+## Safe live-demo fixtures
+
+`security/fixtures/` is excluded by `.gitleaks.toml`,
+`.trufflehog-exclude-paths.txt`, and `.semgrepignore`. Its dependency manifest
+is standalone and absent from the application lockfile. The activation scripts
+refuse to run unless the current branch is exactly the corresponding
+`demo/phase-10-*` branch; activated snippets are never imported by the app.
+
+Only three findings are activated live: a non-credential secret marker, an
+isolated SAST pattern, and harmless historical `minimist` 1.2.5. OSV's official
+record identifies that version as affected by GHSA-xvch-5gv4-984h
+(CVE-2021-44906) and version 1.2.6 as fixed. Known-malicious packages are never
+downloaded; their `MAL-` path and the unpredictable no-fix path use synthetic
+gate reports through the two dedicated `make demo-*` targets.
 
 ## Container image scanning
 

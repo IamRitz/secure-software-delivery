@@ -1,0 +1,9 @@
+{
+  "_fixtureNotice": "THIS IS A DELIBERATE TEST FIXTURE FOR A CI/CD SECURITY DEMO. NOT REAL. NOT PRODUCTION CODE. See security/fixtures/README.md.",
+  "name": "phase-10-known-cve-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "minimist": "1.2.5"
+  }
+}

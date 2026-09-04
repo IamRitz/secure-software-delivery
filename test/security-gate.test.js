@@ -58,6 +58,16 @@ describe('security gate', () => {
     assert.equal(onlyFinding(result).policyRule, 'secrets.verified');
   });
 
+  it('blocks the dedicated non-credential demo marker without calling it verified', async () => {
+    const { result } = await evaluate({
+      gitleaks: join(FIXTURES, 'demo-dummy-secret/gitleaks.json')
+    });
+
+    assert.equal(result.verdict, 'BLOCK');
+    assert.equal(onlyFinding(result).policyRule, 'secrets.demo_dummy');
+    assert.match(onlyFinding(result).reason, /non-credential marker/);
+  });
+
   it('blocks a critical dependency with a fix', async () => {
     const { result } = await evaluate({
       npmAudit: join(FIXTURES, 'critical-with-fix/npm-audit.json')
