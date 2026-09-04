@@ -1,0 +1,13 @@
+# Gitleaks configuration for normal scans and the opt-in Phase 10 demo.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "phase10-demo-dummy-secret"
+description = "Inert dummy marker used only on never-merged Phase 10 demo branches"
+regex = '''DEMO_ONLY_SECRET_[A-Z0-9]{32}'''
+keywords = ["DEMO_ONLY_SECRET_"]
+
+[allowlist]
+description = "Security fixtures are inert until copied into a normal scanned path"
+paths = ['''(^|/)security/fixtures/''']

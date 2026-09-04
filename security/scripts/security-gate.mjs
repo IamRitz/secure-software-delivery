@@ -82,6 +82,7 @@ function validatePolicy(policy) {
   for (const path of [
     'secrets.verified',
     'secrets.unverified',
+    'secrets.demo_dummy',
     'dependencies.critical_with_fix',
     'dependencies.high_with_fix',
     'dependencies.critical_no_fix',
@@ -165,12 +166,15 @@ function evaluateSecrets(policy, gitleaks, trufflehog, findings) {
   for (const finding of gitleaks) {
     assert(typeof finding.RuleID === 'string', 'Gitleaks finding is missing RuleID');
     assert(typeof finding.File === 'string', 'Gitleaks finding is missing File');
+    const isDemoDummy = finding.RuleID === 'phase10-demo-dummy-secret';
     addFinding(findings, policy, {
       source: 'gitleaks',
       id: finding.RuleID,
       location: `${finding.File}:${finding.StartLine ?? '?'}`,
-      policyRule: 'secrets.unverified',
-      reason: 'Gitleaks pattern match is not provider-verified'
+      policyRule: isDemoDummy ? 'secrets.demo_dummy' : 'secrets.unverified',
+      reason: isDemoDummy
+        ? 'Dedicated non-credential marker activated on a never-merged demo branch'
+        : 'Gitleaks pattern match is not provider-verified'
     });
   }
 

@@ -36,8 +36,10 @@ workspace immediately after all three scanner stages.
 
 ## Finding interpretation
 
-- TruffleHog `Verified: true` blocks; Gitleaks and unverified TruffleHog
-  matches are logged.
+- TruffleHog `Verified: true` blocks; ordinary Gitleaks and unverified
+  TruffleHog matches are logged. The exact Gitleaks rule
+  `phase10-demo-dummy-secret` is a documented demo-only exception that blocks
+  safely generated marker text without claiming provider verification.
 - npm audit supplies severity and `fixAvailable`. OSV severity is calculated
   from CVSS v3 and fix availability comes from `fixed` events in the matching
   affected package ranges.

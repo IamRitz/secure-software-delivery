@@ -1,0 +1,16 @@
+rules:
+  - id: secure-delivery.node-command-injection
+    message: Untrusted request data must not be passed to a command shell.
+    severity: ERROR
+    languages:
+      - javascript
+    patterns:
+      - pattern-inside: |
+          function $FUNC($REQUEST, ...) {
+            ...
+          }
+      - pattern: exec($REQUEST.query.$FIELD, ...)
+    metadata:
+      category: security
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      confidence: HIGH

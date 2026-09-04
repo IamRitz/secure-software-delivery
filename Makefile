@@ -7,7 +7,7 @@ TRUFFLEHOG_IMAGE := trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323
 OSV_SCANNER_IMAGE := ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
 SEMGREP_IMAGE := semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e
 
-.PHONY: secrets dependencies sast security gate image-gate
+.PHONY: secrets dependencies sast security gate image-gate demo-malicious-package demo-dependency-no-fix
 
 reports:
 	mkdir -p reports
@@ -17,12 +17,14 @@ secrets: reports
 		-v "$(CURDIR):/repo:ro" \
 		-v "$(CURDIR)/reports:/reports" \
 		$(GITLEAKS_IMAGE) \
-		git /repo --platform github --no-banner --redact=100 --report-format json \
+		git /repo --config /repo/.gitleaks.toml --log-opts=HEAD --platform github \
+		--no-banner --redact=100 --report-format json \
 		--report-path /reports/gitleaks.json --exit-code 0
 	docker run --rm \
 		-v "$(CURDIR):/repo:ro" \
 		$(TRUFFLEHOG_IMAGE) \
 		git file:///repo --json --no-update \
+		--exclude-paths=/repo/.trufflehog-exclude-paths.txt \
 		--results=verified,unverified,unknown --no-fail --fail-on-scan-errors \
 		> reports/trufflehog.raw.jsonl
 	node security/scripts/normalize-trufflehog.mjs \
@@ -55,6 +57,7 @@ sast: reports
 		semgrep scan \
 		--config p/owasp-top-ten \
 		--config p/javascript \
+		--config security/semgrep-rules.yml \
 		--json-output=/reports/semgrep.json \
 		--metrics=off \
 		--disable-version-check \
@@ -68,3 +71,25 @@ gate:
 
 image-gate:
 	node security/scripts/image-gate.mjs
+
+demo-malicious-package: reports
+	node security/scripts/security-gate.mjs \
+		--gitleaks security/scripts/__fixtures__/clean/gitleaks.json \
+		--trufflehog security/scripts/__fixtures__/clean/trufflehog.json \
+		--npm-audit security/scripts/__fixtures__/clean/npm-audit.json \
+		--osv security/scripts/__fixtures__/malicious-package/osv-scanner.json \
+		--semgrep security/scripts/__fixtures__/clean/semgrep.json \
+		--baseline security/scripts/__fixtures__/clean/semgrep-baseline.json \
+		--output reports/demo-malicious-package-gate.json \
+		--exceptions reports/demo-malicious-package-exceptions.json
+
+demo-dependency-no-fix: reports
+	node security/scripts/security-gate.mjs \
+		--gitleaks security/scripts/__fixtures__/clean/gitleaks.json \
+		--trufflehog security/scripts/__fixtures__/clean/trufflehog.json \
+		--npm-audit security/scripts/__fixtures__/critical-no-fix/npm-audit.json \
+		--osv security/scripts/__fixtures__/clean/osv-scanner.json \
+		--semgrep security/scripts/__fixtures__/clean/semgrep.json \
+		--baseline security/scripts/__fixtures__/clean/semgrep-baseline.json \
+		--output reports/demo-dependency-no-fix-gate.json \
+		--exceptions reports/demo-dependency-no-fix-exceptions.json

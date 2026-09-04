@@ -41,7 +41,8 @@ jobs:
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$GITHUB_WORKSPACE/reports:/reports" \
             ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git /repo --platform github --no-banner --redact=100 --report-format json \
+            git /repo --config /repo/.gitleaks.toml --log-opts=HEAD --platform github \
+            --no-banner --redact=100 --report-format json \
             --report-path /reports/gitleaks.json --exit-code 0
 
       - name: Run TruffleHog (report only)
@@ -50,6 +51,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
             git file:///repo --json --no-update \
+            --exclude-paths=/repo/.trufflehog-exclude-paths.txt \
             --results=verified,unverified,unknown --no-fail \
             --fail-on-scan-errors > reports/trufflehog.raw.jsonl
           node security/scripts/normalize-trufflehog.mjs \
@@ -86,28 +88,45 @@ jobs:
         run: mkdir -p reports
 
       - name: Run npm audit (report only)
+        continue-on-error: true
         run: |
-          set +e
-          npm audit --json --package-lock-only > reports/npm-audit.json
-          audit_status=$?
-          set -e
+          for attempt in 1 2 3; do
+            set +e
+            npm audit --json --package-lock-only > reports/npm-audit.json
+            audit_status=$?
+            set -e
+            if node security/scripts/validate-dependency-report.mjs \
+              npm-audit reports/npm-audit.json; then
+              echo "npm audit produced a valid report (scanner exit $audit_status)"
+              exit 0
+            fi
+            echo "npm audit report attempt $attempt was invalid; retrying" >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep 15
+            fi
+          done
+          exit 1
+
+      - name: Validate npm audit report
+        run: |
           node security/scripts/validate-dependency-report.mjs \
             npm-audit reports/npm-audit.json
-          echo "npm audit exit code: $audit_status (security gate evaluates findings)"
+          echo "npm audit report is valid; the security gate evaluates findings"
 
       - name: Run OSV-Scanner (report only)
+        continue-on-error: true
         run: |
-          set +e
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
             scan source --lockfile=/repo/package-lock.json --format=json \
             > reports/osv-scanner.json
-          osv_status=$?
-          set -e
+
+      - name: Validate OSV-Scanner report
+        run: |
           node security/scripts/validate-dependency-report.mjs \
             osv-scanner reports/osv-scanner.json
-          echo "OSV-Scanner exit code: $osv_status (security gate evaluates findings)"
+          echo "OSV-Scanner report is valid; the security gate evaluates findings"
 
       - name: Upload dependency scan reports
         if: always()
@@ -149,6 +168,7 @@ jobs:
             semgrep scan \
             --config p/owasp-top-ten \
             --config p/javascript \
+            --config security/semgrep-rules.yml \
             --json-output=/reports/semgrep.json \
             --metrics=off \
             --disable-version-check \

@@ -40,7 +40,7 @@ const findings = report.results
 const baseline = {
   schemaVersion: 1,
   generatedBy: `semgrep ${report.version}`,
-  rulesets: ['p/owasp-top-ten', 'p/javascript'],
+  rulesets: ['p/owasp-top-ten', 'p/javascript', 'security/semgrep-rules.yml'],
   findings
 };
 
