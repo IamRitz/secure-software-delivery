@@ -31,6 +31,12 @@ and `ps`, plus teardown with `down -v`, work after the shell variable has been
 unset. If the repository becomes private, starting with that default cannot
 authenticate and a read-only token must be exported first.
 
+Anonymous public mode uses the generic Git branch source, avoiding GitHub's
+very small unauthenticated API quota. Supplying a token switches JCasC to the
+GitHub branch source. That authenticated mode is required if this demo needs
+GitHub-specific pull-request head discovery; branch builds are sufficient for
+the Phase 9 local verification.
+
 The controller uses Jenkins' **Throttle at/near rate limit** strategy. This is
 appropriate for one small, infrequently scanned demo repository and avoids the
 multi-minute request spreading intended for busy shared controllers; GitHub's
