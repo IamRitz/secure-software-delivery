@@ -1,6 +1,6 @@
 // THIS IS A DELIBERATE TEST FIXTURE FOR A CI/CD SECURITY DEMO. NOT REAL. NOT PRODUCTION CODE. See security/fixtures/README.md.
 
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 
 const TARGETS = {
   secret: 'src/config/_demo_secret.js',
@@ -55,7 +55,13 @@ if (!['secret', 'sast', 'dependency'].includes(name)) {
     } else {
       await rm(TARGETS[name], { force: true });
       if (name === 'secret') {
-        await rm('src/config', { recursive: false, force: true });
+        try {
+          await rmdir('src/config');
+        } catch (error) {
+          if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) {
+            throw error;
+          }
+        }
       }
       console.log(`Deactivated ${name}: removed ${TARGETS[name]}`);
     }
