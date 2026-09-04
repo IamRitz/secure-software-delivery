@@ -11,7 +11,11 @@ CI/CD pipeline in GitHub Actions and Jenkins.
 That principle defines the pipeline boundary. GitHub Actions and Jenkins run
 tests plus secret, dependency, and static-analysis scans without cloud or
 deployment credentials. A shared fail-closed security gate evaluates their
-reports before any future build or deployment work can begin.
+reports before image build or deployment work can begin.
+
+On a `main` push, a passing security gate permits a credential-free Docker
+build. Only the subsequent AWS delivery job can request a short-lived AWS
+identity. If AWS is not configured, that delivery path is visibly skipped.
 
 ## Requirements
 
@@ -28,7 +32,7 @@ npm run lint
 npm start
 ```
 
-The committed lockfile is authoritative. Local automation and all future CI
+The committed lockfile is authoritative. Local automation and all CI
 jobs must use `npm ci`, never `npm install`, so dependency resolution cannot
 silently rewrite it. The repository's current npm 10.9.2 does not support
 `min-release-age`; `.npmrc` records the seven-day setting in commented form and
@@ -74,9 +78,14 @@ make dependencies  # npm audit and OSV-Scanner
 make sast          # Semgrep OSS
 make security      # all scanner targets above
 make gate          # evaluate the reports currently in reports/
+make image-gate    # evaluate reports/ecr-image-scan.json before deployment
 ```
 
 Run the complete clean-repository path with `make security && make gate`.
 The gate exits zero for `PASS` and `PASS-WITH-EXCEPTIONS`, and non-zero for
 `BLOCK`. Its detailed decision and separately tracked exceptions are written
 to `reports/security-gate.json` and `reports/gate-exceptions.json`.
+
+AWS-dependent ECR push, image scan, and ECS deployment are implemented but
+have not been run against real infrastructure. See
+[`docs/aws-setup.md`](docs/aws-setup.md) before enabling them.

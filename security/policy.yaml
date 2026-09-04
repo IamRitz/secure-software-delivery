@@ -21,6 +21,12 @@ sast:
   medium: LOG
   low: LOG
 
+image:
+  critical: BLOCK_DEPLOY
+  high: BLOCK_DEPLOY
+  medium: LOG
+  low: LOG
+
 severity_mapping:
   # npm audit reports info/low/moderate/high/critical; the gate uses those values.
   osv_cvss_thresholds:

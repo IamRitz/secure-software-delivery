@@ -20,7 +20,9 @@ services:
       - /bin/bash
       - -c
       - |
-        jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+        jenkins-plugin-cli \
+          --plugin-file /usr/share/jenkins/ref/plugins.txt \
+          --plugin-download-directory /var/jenkins_home/plugins
         exec /usr/local/bin/jenkins.sh
 
 volumes:

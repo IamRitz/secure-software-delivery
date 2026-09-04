@@ -50,6 +50,22 @@ workspace immediately after all three scanner stages.
 The thresholds are intentionally adjustable POC defaults, not a general policy
 language.
 
+## Deploy gate
+
+The post-push deploy gate is deliberately separate from the pre-build security
+gate. `security/scripts/image-gate.mjs` evaluates the normalized ECR basic-scan
+report against the `image` policy section:
+
+- Critical or High produces `BLOCK_DEPLOY` and a non-zero exit.
+- Medium or Low is logged and deployment may continue.
+- A validated, complete report with zero blocking findings produces `DEPLOY`.
+- A missing, malformed, incomplete, unsupported, or internally inconsistent
+  report produces `BLOCK_DEPLOY`.
+
+Both GitHub Actions and Jenkins call this same script. They do not translate
+its decision in YAML or Groovy, preventing policy and exit behavior from
+drifting apart.
+
 ## GitHub branch protection
 
 Branch protection is a GitHub repository setting, not workflow YAML. After the

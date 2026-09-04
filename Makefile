@@ -7,7 +7,7 @@ TRUFFLEHOG_IMAGE := trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323
 OSV_SCANNER_IMAGE := ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
 SEMGREP_IMAGE := semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e
 
-.PHONY: secrets dependencies sast security gate
+.PHONY: secrets dependencies sast security gate image-gate
 
 reports:
 	mkdir -p reports
@@ -65,3 +65,6 @@ security: secrets dependencies sast
 
 gate:
 	node security/scripts/security-gate.mjs
+
+image-gate:
+	node security/scripts/image-gate.mjs

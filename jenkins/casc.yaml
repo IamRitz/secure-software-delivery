@@ -20,6 +20,8 @@ jenkins:
             value: ""
 
 unclassified:
+  gitHubConfiguration:
+    apiRateLimitChecker: ThrottleOnOver
   location:
     url: http://127.0.0.1:8080/
 
@@ -35,25 +37,34 @@ credentials:
               password: ${DEMO_GITHUB_TOKEN}
 
 jobs:
-  - script: >
+  - script: |
+      def githubToken = System.getenv('DEMO_GITHUB_TOKEN')
       multibranchPipelineJob('secure-software-delivery') {
         displayName('secure-software-delivery')
         branchSources {
-          branchSource {
-            source {
-              github {
-                id('secure-software-delivery-github')
-                configuredByUrl(true)
-                repositoryUrl('https://github.com/IamRitz/secure-software-delivery.git')
-                credentialsId('github-demo-pat')
-                repoOwner('IamRitz')
-                repository('secure-software-delivery')
-                traits {
-                  gitHubBranchDiscovery {
-                    strategyId(3)
+          if (githubToken && githubToken != 'unset') {
+            branchSource {
+              source {
+                github {
+                  id('secure-software-delivery-github')
+                  configuredByUrl(true)
+                  repositoryUrl('https://github.com/IamRitz/secure-software-delivery.git')
+                  credentialsId('github-demo-pat')
+                  repoOwner('IamRitz')
+                  repository('secure-software-delivery')
+                  traits {
+                    gitHubBranchDiscovery {
+                      strategyId(3)
+                    }
                   }
                 }
               }
+            }
+          } else {
+            git {
+              id('secure-software-delivery-public-git')
+              remote('https://github.com/IamRitz/secure-software-delivery.git')
+              includes('*')
             }
           }
         }

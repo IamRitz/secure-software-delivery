@@ -25,10 +25,22 @@ export DEMO_GITHUB_TOKEN='<read-only GitHub PAT>'
 ```
 
 Only `docker compose up` needs a real token for private-repository discovery.
-Compose defaults the variable to the inert string `unset`, so read-only
-commands such as `config` and `ps`, and teardown with `down -v`, work after the
-shell variable has been unset. Starting the controller with that default will
-not authenticate to a private repository.
+Compose defaults the variable to the inert string `unset`, so this public
+repository is discovered anonymously and read-only commands such as `config`
+and `ps`, plus teardown with `down -v`, work after the shell variable has been
+unset. If the repository becomes private, starting with that default cannot
+authenticate and a read-only token must be exported first.
+
+Anonymous public mode uses the generic Git branch source, avoiding GitHub's
+very small unauthenticated API quota. Supplying a token switches JCasC to the
+GitHub branch source. That authenticated mode is required if this demo needs
+GitHub-specific pull-request head discovery; branch builds are sufficient for
+the Phase 9 local verification.
+
+The controller uses Jenkins' **Throttle at/near rate limit** strategy. This is
+appropriate for one small, infrequently scanned demo repository and avoids the
+multi-minute request spreading intended for busy shared controllers; GitHub's
+real API limit is still enforced.
 
 JCasC reads `${DEMO_GITHUB_TOKEN}` when the container starts, stores it as a
 Jenkins username/password credential for branch discovery, and overrides the
@@ -61,13 +73,18 @@ curl -fsS '<branch-url>lastBuild/api/json?tree=number,result,building,url'
 curl -fsS '<branch-url>lastBuild/consoleText'
 ```
 
-The successful console log must show Checkout, parallel Gitleaks and
-TruffleHog scans, parallel npm audit and OSV-Scanner lockfile scans, Semgrep
-SAST, Security Gate, Install, Lint, and Test. Confirm the five scanner reports,
+On a feature branch, the successful console log must show Checkout, parallel
+Gitleaks and TruffleHog scans, parallel npm audit and OSV-Scanner lockfile
+scans, Semgrep SAST, Security Gate, Install, Lint, and Test; all post-gate
+delivery stages are skipped because only `main` can build. After merging,
+verify a non-scheduled `main` build also completes Docker Build. With the default
+`ENABLE_AWS_DELIVERY=false`, it must print the explicit AWS-not-configured
+message and show ECR Push, Image Scan, Deploy Gate, and Deploy as skipped.
+Confirm the five scanner reports,
 `security-gate.json`, and `gate-exceptions.json` appear under **Build
 Artifacts**, then confirm the gate prints `SECURITY GATE: PASS`, `npm ci`,
-ESLint, and all tests complete successfully. Local command emulation is not a
-substitute for this controller result.
+ESLint, all tests, and the Docker build complete successfully. Local command
+emulation is not a substitute for this controller result.
 
 ## Tear down
 
@@ -78,6 +95,7 @@ docker compose -f jenkins/docker-compose.yml down -v
 unset DEMO_GITHUB_TOKEN
 ```
 
-Later phases can reuse this bring-up to verify Docker, ECR, and deployment
-stages after those stages exist. The configuration is reusable, but the
-controller is still ephemeral and must not run constantly.
+Future verification can reuse this bring-up for real ECR and deployment runs
+after AWS exists and the credentials documented in `docs/aws-setup.md` are
+created. The configuration is reusable, but the controller is still ephemeral
+and must not run constantly.

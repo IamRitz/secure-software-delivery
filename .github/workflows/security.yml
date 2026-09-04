@@ -220,3 +220,156 @@ jobs:
             reports/gate-exceptions.json
           if-no-files-found: error
           retention-days: 14
+
+  container-build:
+    name: Container build
+    needs:
+      - security-gate
+    if: >-
+      needs.security-gate.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Build application image without AWS credentials
+        run: docker build --tag "secure-software-delivery:$GITHUB_SHA" .
+
+      - name: Export application image
+        run: docker save "secure-software-delivery:$GITHUB_SHA" | gzip > application-image.tar.gz
+
+      - name: Upload application image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-image-${{ github.sha }}
+          path: application-image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  aws-configuration:
+    name: AWS configuration
+    needs:
+      - container-build
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.detect.outputs.configured }}
+
+    steps:
+      - name: Detect AWS delivery configuration
+        id: detect
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+        run: |
+          missing=()
+          for name in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "AWS delivery configuration is present; real AWS stages will run"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS not configured — ECR push, image scan, deploy gate, and deploy skipped; see docs/aws-setup.md. Missing: ${missing[*]}"
+          fi
+
+  aws-delivery:
+    name: AWS delivery
+    needs:
+      - container-build
+      - aws-configuration
+    if: needs.aws-configuration.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out delivery scripts and policy
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Download credential-free image build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: application-image-${{ github.sha }}
+
+      - name: Load application image
+        run: gunzip --stdout application-image.tar.gz | docker load
+
+      - name: Assume scoped AWS role with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: secure-software-delivery
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@aded0d722166a37980e030aa969dda0bfe6b6947 # v2.1.7
+
+      - name: Push immutable and demo image tags
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          target="$ECR_REGISTRY/$ECR_REPOSITORY"
+          docker tag "secure-software-delivery:$GITHUB_SHA" "$target:$GITHUB_SHA"
+          docker tag "secure-software-delivery:$GITHUB_SHA" "$target:demo"
+          docker push "$target:$GITHUB_SHA"
+          docker push "$target:demo"
+
+      - name: Poll ECR image scan
+        continue-on-error: true
+        env:
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          node security/scripts/poll-ecr-scan.mjs \
+            --repository "$ECR_REPOSITORY" \
+            --image-tag "$GITHUB_SHA" \
+            --region "$AWS_REGION" \
+            --output reports/ecr-image-scan.json
+
+      - name: Evaluate deploy policy
+        run: node security/scripts/image-gate.mjs
+
+      - name: Upload image scan and deploy-gate reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-security-results
+          path: |
+            reports/ecr-image-scan.json
+            reports/image-gate.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Deploy approved image to Amazon ECS
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment \
+            --region "$AWS_REGION"
