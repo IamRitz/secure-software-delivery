@@ -122,3 +122,10 @@ Jenkins run must show Docker Build succeeding, AWS Configuration printing the
 not-configured message, and all four AWS-dependent stages as skipped. ECR,
 image scan, and ECS deployment remain unverified until real AWS resources and
 both documented Jenkins credentials exist.
+
+For an eligible security BLOCK, Jenkins first runs the shared eligibility
+check without credentials. Only then does it bind the Secret Text credential
+`break-glass-shared-secret`, notify n8n, and poll for the Discord decision.
+`CHANGE_ID` supplies the PR number for Multibranch PR builds;
+`BREAK_GLASS_PR_NUMBER` is the manual fallback. A hard block, denied decision,
+timeout, missing credential, or endpoint error propagates as a failed stage.

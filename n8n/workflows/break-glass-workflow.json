@@ -1,0 +1,322 @@
+{
+  "name": "Sekure — Discord Interaction Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "break-glass/notify",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "notify-webhook",
+      "name": "Webhook A - Notify",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-900, -360],
+      "webhookId": "break-glass-notify",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_SHARED_SECRET_CREDENTIAL_ID",
+          "name": "Break Glass Shared Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst payload = $json.body;\nconst allowed = new Set(['sast.critical_new','sast.high_new','dependencies.critical_with_fix','dependencies.high_with_fix']);\nif (!payload || payload.schemaVersion !== 1 || !Array.isArray(payload.findings) || payload.findings.length === 0) throw new Error('invalid or empty finding payload');\nif (!payload.findings.every(f => f.action === 'BLOCK' && allowed.has(f.policyRule))) throw new Error('payload contains a non-overridable finding');\nif (!/^[a-f0-9]{64}$/i.test(payload.gateDigest || '')) throw new Error('invalid gate digest');\nif (!payload.context?.repository?.includes('/') || !/^\\d+$/.test(String(payload.context.pullRequest || ''))) throw new Error('repository and pull request are required');\nconst timeout = Math.min(Math.max(Number(payload.timeoutSeconds) || 900, 60), 3600);\nconst now = new Date();\nconst requestId = crypto.randomUUID();\nconst request = { requestId, gateDigest: payload.gateDigest, status: 'pending', createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + timeout * 1000).toISOString(), context: payload.context, findings: payload.findings };\nconst state = $getWorkflowStaticData('global');\nstate.requests ||= {};\nstate.requests[requestId] = request;\nconst lines = payload.findings.map(f => `• ${f.policyRule}: ${f.id} — ${f.reason}`);\nreturn [{json:{request,discordMessage:{allowed_mentions:{parse:[]},embeds:[{title:'Break-glass security exception requested',description:lines.join('\\n').slice(0,4000),color:15105570,fields:[{name:'Repository',value:payload.context.repository,inline:true},{name:'Pull request',value:`#${payload.context.pullRequest}`,inline:true},{name:'Commit',value:payload.context.commitSha.slice(0,12),inline:true},{name:'Expires',value:request.expiresAt}]}],components:[{type:1,components:[{type:2,style:3,label:'Approve',custom_id:`breakglass:${requestId}:approve`},{type:2,style:4,label:'Deny',custom_id:`breakglass:${requestId}:deny`}]}]}}}];"
+      },
+      "id": "prepare-notification",
+      "name": "Validate and Store Pending Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, -360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/v10/channels/1545363889435451453/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.discordMessage) }}",
+        "options": {}
+      },
+      "id": "post-discord-message",
+      "name": "Post Discord Approval Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-420, -360],
+      "credentials": {
+        "discordBotApi": {
+          "id": "OBpTD1dSB7x6IMiB",
+          "name": "Discord Bot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const prepared = $('Validate and Store Pending Request').first().json;\nif (!$json.id) throw new Error('Discord did not return a message ID');\nconst state = $getWorkflowStaticData('global');\nconst request = state.requests?.[prepared.request.requestId];\nif (!request || request.status !== 'pending') throw new Error('pending request disappeared');\nrequest.discord = { channelId: '1545363889435451453', messageId: String($json.id) };\nreturn [{json:{requestId:request.requestId,status:request.status,createdAt:request.createdAt,expiresAt:request.expiresAt}}];"
+      },
+      "id": "store-message-id",
+      "name": "Store Discord Message ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-180, -360]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": { "responseCode": 201 }
+      },
+      "id": "respond-notify",
+      "name": "Respond Notify",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [60, -360]
+    },
+    {
+      "parameters": {
+        "path": "break-glass/status",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "status-webhook",
+      "name": "Webhook C - Status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-900, 360],
+      "webhookId": "break-glass-status",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_SHARED_SECRET_CREDENTIAL_ID",
+          "name": "Break Glass Shared Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const requestId = String($json.query?.requestId || '');\nconst state = $getWorkflowStaticData('global');\nconst request = state.requests?.[requestId];\nif (!request) return [{json:{responseCode:404,responseBody:{error:'unknown_request'}}}];\nif (request.status === 'pending' && new Date(request.expiresAt) <= new Date()) request.status = 'expired';\nreturn [{json:{responseCode:200,responseBody:{requestId:request.requestId,gateDigest:request.gateDigest,status:request.status,createdAt:request.createdAt,expiresAt:request.expiresAt,decidedAt:request.decidedAt || null,approver:request.approver || null}}}];"
+      },
+      "id": "read-status",
+      "name": "Read Request Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 360]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.responseBody }}",
+        "options": { "responseCode": "={{ $json.responseCode }}" }
+      },
+      "id": "respond-status",
+      "name": "Respond Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [-420, 360]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "discord/interactions",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "id": "interaction-webhook",
+      "name": "Webhook B - Discord Interactions",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-900, 0],
+      "webhookId": "discord-interactions"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "break-glass/interactions",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "id": "interaction-webhook-alias",
+      "name": "Webhook B - Break Glass Interactions Alias",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-900, 120],
+      "webhookId": "break-glass-interactions"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nconst headers = Object.fromEntries(Object.entries(item.json.headers || {}).map(([k,v]) => [k.toLowerCase(),String(v)]));\nlet rawBody;\nconst encoded = item.binary?.data?.data;\nif (typeof encoded === 'string') rawBody = Buffer.from(encoded, 'base64');\nif (!rawBody) { try { rawBody = await this.helpers.getBinaryDataBuffer(0, 'data'); } catch {} }\nconst signatureHex = headers['x-signature-ed25519'];\nconst timestamp = headers['x-signature-timestamp'];\nconst publicKeyHex = '7e0f70984cec02d0ab25fd17567206210e9a395073e6e7ae316fe7078adb5cb8';\nlet verified = false;\ntry {\n  if (!rawBody || !/^[0-9a-f]{64}$/i.test(publicKeyHex) || !/^[0-9a-f]{128}$/i.test(signatureHex || '') || !timestamp) throw new Error('missing signature material');\n  if (!/^\\d+$/.test(timestamp) || Math.abs(Math.floor(Date.now()/1000) - Number(timestamp)) > 300) throw new Error('stale or malformed timestamp');\n  const key = crypto.createPublicKey({key:{kty:'OKP',crv:'Ed25519',x:Buffer.from(publicKeyHex,'hex').toString('base64url')},format:'jwk'});\n  verified = crypto.verify(null,Buffer.concat([Buffer.from(timestamp,'utf8'),rawBody]),key,Buffer.from(signatureHex,'hex'));\n} catch { verified = false; }\nif (!verified) return [{json:{responseCode:401,responseBody:{error:'invalid_request_signature'},processComponent:false}}];\nlet interaction;\ntry { interaction = JSON.parse(rawBody.toString('utf8')); } catch { return [{json:{responseCode:400,responseBody:{error:'invalid_json'},processComponent:false}}]; }\nif (interaction.type === 1) return [{json:{responseCode:200,responseBody:{type:1},processComponent:false}}];\nif (interaction.type === 3) return [{json:{responseCode:200,responseBody:{type:6},processComponent:true,interaction}}];\nreturn [{json:{responseCode:400,responseBody:{error:'unsupported_interaction'},processComponent:false}}];"
+      },
+      "id": "verify-interaction",
+      "name": "Verify Discord Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.responseBody }}",
+        "options": { "responseCode": "={{ $json.responseCode }}" }
+      },
+      "id": "respond-interaction",
+      "name": "Respond to Discord Immediately",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [-420, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "leftValue": "={{ $json.processComponent }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-component",
+      "name": "Is Verified Component",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-180, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const interaction = $json.interaction;\nconst match = /^breakglass:([0-9a-f-]{36}):(approve|deny)$/.exec(interaction.data?.custom_id || '');\nif (!match) return [{json:{outcome:'rejected',interaction,message:'Invalid or stale approval control.'}}];\nconst [,requestId,action] = match;\nconst user = interaction.member?.user || interaction.user;\nif (!user?.id) return [{json:{outcome:'rejected',interaction,message:'Discord did not provide a user identity.'}}];\nconst allowed = new Set(String($env.DISCORD_APPROVER_IDS || '').split(',').map(v=>v.trim()).filter(Boolean));\nif (!allowed.has(String(user.id))) return [{json:{outcome:'unauthorized',interaction,requestId,message:`${user.username || user.id} is not an authorized break-glass approver.`}}];\nconst state = $getWorkflowStaticData('global');\nconst request = state.requests?.[requestId];\nif (!request) return [{json:{outcome:'rejected',interaction,requestId,message:'Unknown approval request.'}}];\nif (new Date(request.expiresAt) <= new Date()) { if (request.status === 'pending') request.status='expired'; return [{json:{outcome:'rejected',interaction,requestId,message:'This approval request has expired.'}}]; }\nif (request.status !== 'pending') return [{json:{outcome:'duplicate',interaction,requestId,message:`Request is already ${request.status}.`}}];\nrequest.status='processing';\nrequest.claim={decision:action==='approve'?'approved':'denied',userId:String(user.id),username:user.global_name || user.username || String(user.id),claimedAt:new Date().toISOString()};\nconst findingText=request.findings.map(f=>`${f.policyRule}: ${f.id}`).join('; ');\nconst comment=`Break-glass decision: **${request.claim.decision.toUpperCase()}**\\n\\nVerified Discord approver: **${request.claim.username}** (ID: \\`${request.claim.userId}\\`)\\n\\nTimestamp: ${request.claim.claimedAt}\\n\\nOverridden finding(s): ${findingText}\\n\\nGate digest: \\`${request.gateDigest}\\``;\nconst disabled={allowed_mentions:{parse:[]},embeds:[{title:`Break-glass ${request.claim.decision}`,description:`Decision by ${request.claim.username} (${request.claim.userId})\\n${findingText}`.slice(0,4000),color:request.claim.decision==='approved'?5763719:15548997}],components:[{type:1,components:[{type:2,style:3,label:'Approve',custom_id:`breakglass:${requestId}:approve`,disabled:true},{type:2,style:4,label:'Deny',custom_id:`breakglass:${requestId}:deny`,disabled:true}]}]};\nreturn [{json:{outcome:'claimed',interaction,requestId,request,githubComment:comment,discordUpdate:disabled}}];"
+      },
+      "id": "claim-decision",
+      "name": "Authorize and Claim Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [60, -80]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 },
+          "conditions": [{ "leftValue": "={{ $json.outcome }}", "rightValue": "claimed", "operator": { "type": "string", "operation": "equals" } }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "decision-claimed",
+      "name": "Decision Claimed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [300, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.github.com/repos/' + $json.request.context.repository + '/issues/' + $json.request.context.pullRequest + '/comments' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "X-GitHub-Api-Version", "value": "2022-11-28" }, { "name": "Accept", "value": "application/vnd.github+json" }] },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({body:$json.githubComment}) }}",
+        "options": {}
+      },
+      "id": "post-github-comment",
+      "name": "Post GitHub Audit Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [540, -160],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_GITHUB_PAT_CREDENTIAL_ID",
+          "name": "GitHub Break Glass PAT"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://discord.com/api/v10/channels/' + $('Authorize and Claim Decision').first().json.request.discord.channelId + '/messages/' + $('Authorize and Claim Decision').first().json.request.discord.messageId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($('Authorize and Claim Decision').first().json.discordUpdate) }}",
+        "options": {}
+      },
+      "id": "disable-buttons",
+      "name": "Finalize Discord Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, -160],
+      "credentials": {
+        "discordBotApi": {
+          "id": "OBpTD1dSB7x6IMiB",
+          "name": "Discord Bot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const claimed = $('Authorize and Claim Decision').first().json;\nconst state = $getWorkflowStaticData('global');\nconst request = state.requests?.[claimed.requestId];\nif (!request || request.status !== 'processing' || request.claim?.userId !== claimed.request.claim.userId) throw new Error('decision claim changed before finalization');\nrequest.status=request.claim.decision;\nrequest.decidedAt=new Date().toISOString();\nrequest.approver={id:request.claim.userId,username:request.claim.username};\ndelete request.claim;\nreturn [{json:{requestId:request.requestId,status:request.status}}];"
+      },
+      "id": "finalize-state",
+      "name": "Finalize Request State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, -160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://discord.com/api/v10/webhooks/' + $json.interaction.application_id + '/' + $json.interaction.token }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({content:$json.message,flags:64,allowed_mentions:{parse:[]}}) }}",
+        "options": {}
+      },
+      "id": "reject-click",
+      "name": "Acknowledge Rejected Click",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [540, 40]
+    }
+  ],
+  "connections": {
+    "Webhook A - Notify": { "main": [[{ "node": "Validate and Store Pending Request", "type": "main", "index": 0 }]] },
+    "Validate and Store Pending Request": { "main": [[{ "node": "Post Discord Approval Message", "type": "main", "index": 0 }]] },
+    "Post Discord Approval Message": { "main": [[{ "node": "Store Discord Message ID", "type": "main", "index": 0 }]] },
+    "Store Discord Message ID": { "main": [[{ "node": "Respond Notify", "type": "main", "index": 0 }]] },
+    "Webhook C - Status": { "main": [[{ "node": "Read Request Status", "type": "main", "index": 0 }]] },
+    "Read Request Status": { "main": [[{ "node": "Respond Status", "type": "main", "index": 0 }]] },
+    "Webhook B - Discord Interactions": { "main": [[{ "node": "Verify Discord Signature", "type": "main", "index": 0 }]] },
+    "Webhook B - Break Glass Interactions Alias": { "main": [[{ "node": "Verify Discord Signature", "type": "main", "index": 0 }]] },
+    "Verify Discord Signature": { "main": [[{ "node": "Respond to Discord Immediately", "type": "main", "index": 0 }]] },
+    "Respond to Discord Immediately": { "main": [[{ "node": "Is Verified Component", "type": "main", "index": 0 }]] },
+    "Is Verified Component": { "main": [[{ "node": "Authorize and Claim Decision", "type": "main", "index": 0 }], []] },
+    "Authorize and Claim Decision": { "main": [[{ "node": "Decision Claimed", "type": "main", "index": 0 }]] },
+    "Decision Claimed": { "main": [[{ "node": "Post GitHub Audit Comment", "type": "main", "index": 0 }], [{ "node": "Acknowledge Rejected Click", "type": "main", "index": 0 }]] },
+    "Post GitHub Audit Comment": { "main": [[{ "node": "Finalize Discord Message", "type": "main", "index": 0 }]] },
+    "Finalize Discord Message": { "main": [[{ "node": "Finalize Request State", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "active": false,
+  "versionId": "00000000-0000-4000-8000-000000000011",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "phase": "11",
+    "note": "Set workflow concurrency to 1 before activation so static-data claims are serialized."
+  },
+  "tags": []
+}

@@ -23,6 +23,15 @@ sast:
   medium: LOG
   low: LOG
 
+# Break-glass never changes the scanner policy above. It only identifies the
+# two BLOCK categories that may enter a separately authenticated approval flow.
+break_glass:
+  sast_new: ELIGIBLE
+  dependency_with_fix: ELIGIBLE
+  verified_secrets: NEVER
+  malicious_package: NEVER
+  report_integrity: NEVER
+
 image:
   critical: BLOCK_DEPLOY
   high: BLOCK_DEPLOY

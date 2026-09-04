@@ -46,3 +46,16 @@ protection requires this exact check before merge; scanner jobs remain report
 producers rather than three separate policy implementations. The repository
 setting and its manual verification procedure are documented in
 `docs/gating.md`.
+
+When the gate emits an eligible BLOCK, the job checks eligibility before
+loading `BREAK_GLASS_SHARED_SECRET`, sends the normalized findings to n8n, and
+polls for a verified Discord decision. Approval preserves the same
+`security-gate` check name and lets that job succeed; denial, timeout, endpoint
+failure, or malformed status fails it. Verified-secret and malicious-package
+hard blocks fail during the credential-free eligibility step and never invoke
+n8n.
+
+For the controlled interaction demo, `workflow_dispatch` accepts
+`break_glass_demo` (`sast` or `dependency`) and `break_glass_pr_number`. It
+copies an existing synthetic Phase 8 report into the gate job only; no live
+vulnerable content is activated or installed.

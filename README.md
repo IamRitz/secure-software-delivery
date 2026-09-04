@@ -96,3 +96,7 @@ activation, cleanup, and synthetic-input commands in
 AWS-dependent ECR push, image scan, and ECS deployment are implemented but
 have not been run against real infrastructure. See
 [`docs/aws-setup.md`](docs/aws-setup.md) before enabling them.
+
+Eligible new SAST and fixable dependency blocks can enter the audited Discord
+break-glass flow described in [`docs/gating.md`](docs/gating.md). Verified
+secrets and known-malicious packages remain permanent hard blocks.
