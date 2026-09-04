@@ -14,8 +14,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "express": "5.1.0",
-    "minimist": "1.2.5"
+    "express": "5.1.0"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
