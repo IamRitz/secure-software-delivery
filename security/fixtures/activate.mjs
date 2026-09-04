@@ -1,6 +1,5 @@
 // THIS IS A DELIBERATE TEST FIXTURE FOR A CI/CD SECURITY DEMO. NOT REAL. NOT PRODUCTION CODE. See security/fixtures/README.md.
 
-import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
@@ -33,17 +32,10 @@ function fail(message) {
   process.exitCode = 1;
 }
 
-function currentBranch() {
-  try {
-    return execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8' }).trim();
-  } catch (error) {
-    throw new Error(`cannot determine current Git branch: ${error.message}`, { cause: error });
-  }
-}
-
-function assertDemoBranch(name) {
+async function assertDemoBranch(name) {
   const expected = `demo/phase-10-${name}`;
-  const actual = currentBranch();
+  const head = (await readFile('.git/HEAD', 'utf8')).trim();
+  const actual = head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '';
   if (actual !== expected) {
     throw new Error(`refusing to activate ${name} on ${actual || 'detached HEAD'}; use ${expected}`);
   }
@@ -92,7 +84,7 @@ if (!['secret', 'sast', 'dependency'].includes(name)) {
   fail('Usage: node security/fixtures/activate.mjs <secret|sast|dependency>');
 } else {
   try {
-    assertDemoBranch(name);
+    await assertDemoBranch(name);
     if (name === 'dependency') {
       await activateDependency();
     } else {

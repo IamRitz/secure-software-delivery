@@ -1,6 +1,5 @@
 // THIS IS A DELIBERATE TEST FIXTURE FOR A CI/CD SECURITY DEMO. NOT REAL. NOT PRODUCTION CODE. See security/fixtures/README.md.
 
-import { execFileSync } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 
 const TARGETS = {
@@ -13,9 +12,10 @@ function fail(message) {
   process.exitCode = 1;
 }
 
-function assertDemoBranch(name) {
+async function assertDemoBranch(name) {
   const expected = `demo/phase-10-${name}`;
-  const actual = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8' }).trim();
+  const head = (await readFile('.git/HEAD', 'utf8')).trim();
+  const actual = head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '';
   if (actual !== expected) {
     throw new Error(`refusing to deactivate ${name} on ${actual || 'detached HEAD'}; use ${expected}`);
   }
@@ -49,7 +49,7 @@ if (!['secret', 'sast', 'dependency'].includes(name)) {
   fail('Usage: node security/fixtures/deactivate.mjs <secret|sast|dependency>');
 } else {
   try {
-    assertDemoBranch(name);
+    await assertDemoBranch(name);
     if (name === 'dependency') {
       await deactivateDependency();
     } else {
