@@ -316,7 +316,7 @@
   "meta": {
     "templateCredsSetupCompleted": false,
     "phase": "11",
-    "note": "Set workflow concurrency to 1 before activation so static-data claims are serialized."
+    "note": "n8n has no per-workflow concurrency field. To serialize the static-data pending->processing claim, set N8N_CONCURRENCY_PRODUCTION_LIMIT=1 at the instance level (affects all workflows), or accept a small double-click race window for this POC. Production should replace static data with a transactional store."
   },
   "tags": []
 }

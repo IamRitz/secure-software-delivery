@@ -26,11 +26,14 @@ DISCORD_APPROVER_IDS=<comma-separated Discord user IDs>
 NODE_FUNCTION_ALLOW_BUILTIN=crypto
 ```
 
-Before activation, set the workflow's production concurrency to **1**. The
-POC uses workflow static data for pending requests; serial execution makes the
-`pending -> processing -> approved|denied` claim transition deterministic and
-prevents conflicting simultaneous clicks. For a production deployment, replace
-static data with a transactional external store.
+n8n has **no per-workflow concurrency setting** — the workflow `settings` object
+only exposes `executionOrder`/`binaryMode`. The POC uses workflow static data for
+pending requests, and the `pending -> processing -> approved|denied` claim
+transition is only race-free under serial execution. To serialize, set the
+instance-wide `N8N_CONCURRENCY_PRODUCTION_LIMIT=1` (this affects **every**
+workflow on the instance), or accept a small double-click race window for the
+POC. For a production deployment, replace static data with a transactional
+external store, which removes the need for global serialization.
 
 The application public key and approval channel ID in the committed workflow
 are public configuration copied from the already-validated live workflows.
