@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { URL } from 'node:url';
 
 const WORKFLOW_ID = 'pxM7aQXKFfa2bmWO';
 const TEMPLATE = resolve('n8n/workflows/break-glass-workflow.json');
