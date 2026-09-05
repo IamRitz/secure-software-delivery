@@ -75,7 +75,7 @@ async function main() {
     if (result.status !== 'approved') {
       throw new Error(`request ${request.requestId} ended as ${result.status}`);
     }
-    console.log(`BREAK-GLASS: APPROVED by verified Discord user ${result.approver?.username}`);
+    console.log(`BREAK-GLASS: APPROVED by verified approver ${result.approver?.username}`);
   } catch (error) {
     console.error(`BREAK-GLASS: DENIED (${error.message})`);
     process.exitCode = 1;
