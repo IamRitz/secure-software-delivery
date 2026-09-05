@@ -213,7 +213,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ 'https://api.github.com/repos/' + $json.request.context.repository + '/issues/' + $json.request.context.pullRequest + '/comments' }}",
+        "url": "={{ 'https://api.github.com/repos/' + $('Authorize and Claim Decision').first().json.request.context.repository + '/issues/' + $('Authorize and Claim Decision').first().json.request.context.pullRequest + '/comments' }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
@@ -221,9 +221,10 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({body:$json.githubComment}) }}",
+        "body": "={{ JSON.stringify({body:$('Authorize and Claim Decision').first().json.githubComment}) }}",
         "options": {}
       },
+      "continueOnFail": true,
       "id": "post-github-comment",
       "name": "Post GitHub Audit Comment",
       "type": "n8n-nodes-base.httpRequest",
@@ -248,6 +249,7 @@
         "body": "={{ JSON.stringify($('Authorize and Claim Decision').first().json.discordUpdate) }}",
         "options": {}
       },
+      "continueOnFail": true,
       "id": "disable-buttons",
       "name": "Finalize Discord Message",
       "type": "n8n-nodes-base.httpRequest",
@@ -300,9 +302,9 @@
     "Respond to Discord Immediately": { "main": [[{ "node": "Is Verified Component", "type": "main", "index": 0 }]] },
     "Is Verified Component": { "main": [[{ "node": "Authorize and Claim Decision", "type": "main", "index": 0 }], []] },
     "Authorize and Claim Decision": { "main": [[{ "node": "Decision Claimed", "type": "main", "index": 0 }]] },
-    "Decision Claimed": { "main": [[{ "node": "Post GitHub Audit Comment", "type": "main", "index": 0 }], [{ "node": "Acknowledge Rejected Click", "type": "main", "index": 0 }]] },
-    "Post GitHub Audit Comment": { "main": [[{ "node": "Finalize Discord Message", "type": "main", "index": 0 }]] },
-    "Finalize Discord Message": { "main": [[{ "node": "Finalize Request State", "type": "main", "index": 0 }]] }
+    "Decision Claimed": { "main": [[{ "node": "Finalize Request State", "type": "main", "index": 0 }], [{ "node": "Acknowledge Rejected Click", "type": "main", "index": 0 }]] },
+    "Finalize Request State": { "main": [[{ "node": "Finalize Discord Message", "type": "main", "index": 0 }]] },
+    "Finalize Discord Message": { "main": [[{ "node": "Post GitHub Audit Comment", "type": "main", "index": 0 }]] }
   },
   "pinData": {},
   "settings": {
