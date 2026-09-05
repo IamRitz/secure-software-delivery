@@ -24,7 +24,14 @@ Configure these n8n environment values outside the repository:
 ```text
 DISCORD_APPROVER_IDS=<comma-separated Discord user IDs>
 NODE_FUNCTION_ALLOW_BUILTIN=crypto
+N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```
+
+`N8N_BLOCK_ENV_ACCESS_IN_NODE=false` is required: the "Authorize and Claim
+Decision" Code node reads the approver allowlist from `$env.DISCORD_APPROVER_IDS`.
+n8n blocks Code-node access to environment variables by default, so without this
+the node fails with `access to env vars denied` and no decision is ever claimed.
+Note this lifts the block instance-wide (every Code node can then read env vars).
 
 n8n has **no per-workflow concurrency setting** — the workflow `settings` object
 only exposes `executionOrder`/`binaryMode`. The POC uses workflow static data for
