@@ -249,6 +249,15 @@ jobs:
           name: sast-reports
           path: reports
 
+      - name: Require explicit dev endpoints for a synthetic demo run
+        # A synthetic BLOCK must never fall back to the production repo Variables.
+        # If break_glass_demo is set, both override URLs must be provided explicitly.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_demo != 'none' && (inputs.break_glass_notify_url == '' || inputs.break_glass_status_url == '') }}
+        run: |
+          echo "A synthetic break_glass_demo run must set BOTH break_glass_notify_url and break_glass_status_url." >&2
+          echo "Refusing to fall back to the production BREAK_GLASS_* repo Variables for a synthetic BLOCK." >&2
+          exit 1
+
       - name: Apply synthetic eligible BLOCK for a manual demo
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_demo != 'none' }}
         env:
