@@ -54,7 +54,9 @@ describe('n8n Slack break-glass workflow definition', () => {
 
   it('accepts a genuinely valid HMAC-signed request in the actual Verify node', async () => {
     const code = node('Verify Slack Signature').parameters.jsCode;
-    const execute = new AsyncFunction('require', '$input', '$env', code);
+    // Shadow URLSearchParams to undefined to mimic the n8n Code-node sandbox,
+    // which does not expose it — the parse must use only core-JS globals.
+    const execute = new AsyncFunction('require', '$input', '$env', 'URLSearchParams', code);
     const interaction = {
       type: 'block_actions',
       user: { id: 'U-REAL', username: 'approver' },
@@ -65,7 +67,8 @@ describe('n8n Slack break-glass workflow definition', () => {
       { helpers: { getBinaryDataBuffer: async () => Buffer.from('') } },
       (await import('node:module')).createRequire(import.meta.url),
       input,
-      { SLACK_SIGNING_SECRET: SIGNING_SECRET }
+      { SLACK_SIGNING_SECRET: SIGNING_SECRET },
+      undefined
     );
     assert.equal(result[0].json.responseCode, 200);
     assert.equal(result[0].json.processComponent, true);
@@ -74,7 +77,9 @@ describe('n8n Slack break-glass workflow definition', () => {
 
   it('rejects a tampered signature in the actual Verify node', async () => {
     const code = node('Verify Slack Signature').parameters.jsCode;
-    const execute = new AsyncFunction('require', '$input', '$env', code);
+    // Shadow URLSearchParams to undefined to mimic the n8n Code-node sandbox,
+    // which does not expose it — the parse must use only core-JS globals.
+    const execute = new AsyncFunction('require', '$input', '$env', 'URLSearchParams', code);
     const interaction = { type: 'block_actions', user: { id: 'U-REAL' }, actions: [{ action_id: `breakglass:${REQUEST_ID}:approve` }] };
     const { input } = signedSlackItem(interaction);
     // Corrupt the signature header
@@ -89,7 +94,8 @@ describe('n8n Slack break-glass workflow definition', () => {
       { helpers: { getBinaryDataBuffer: async () => Buffer.from('') } },
       (await import('node:module')).createRequire(import.meta.url),
       badInput,
-      { SLACK_SIGNING_SECRET: SIGNING_SECRET }
+      { SLACK_SIGNING_SECRET: SIGNING_SECRET },
+      undefined
     );
     assert.equal(result[0].json.responseCode, 401);
     assert.equal(result[0].json.responseBody.error, 'invalid_request_signature');
