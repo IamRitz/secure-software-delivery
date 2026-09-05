@@ -1,6 +1,7 @@
 node_modules/
 coverage/
 reports/
+n8n/backups/
 npm-debug.log*
 .eslintcache
 .env

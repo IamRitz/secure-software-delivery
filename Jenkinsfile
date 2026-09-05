@@ -16,6 +16,9 @@ pipeline {
         string(name: 'ECR_REPOSITORY', defaultValue: 'secure-software-delivery', description: 'ECR repository name')
         string(name: 'ECS_CLUSTER', defaultValue: '', description: 'ECS cluster name')
         string(name: 'ECS_SERVICE', defaultValue: '', description: 'ECS service whose task uses the :demo tag')
+        string(name: 'BREAK_GLASS_PR_NUMBER', defaultValue: '', description: 'PR number for an audited exception; Multibranch CHANGE_ID is preferred')
+        string(name: 'BREAK_GLASS_NOTIFY_URL', defaultValue: 'https://n8n.iamritesh.in/webhook/break-glass/notify', description: 'Authenticated n8n notify endpoint')
+        string(name: 'BREAK_GLASS_STATUS_URL', defaultValue: 'https://n8n.iamritesh.in/webhook/break-glass/status', description: 'Authenticated n8n status endpoint')
     }
 
     triggers {
@@ -160,13 +163,42 @@ pipeline {
             steps {
                 script {
                     docker.image('node:22.23.2-alpine3.24').inside {
-                        sh 'node security/scripts/security-gate.mjs'
+                        def gateStatus = sh(
+                            script: 'node security/scripts/security-gate.mjs',
+                            returnStatus: true
+                        )
+                        if (gateStatus != 0) {
+                            // This check runs before credentials are bound. Hard blocks stop here.
+                            sh 'node security/scripts/break-glass-notify.mjs --check-only'
+                            def pullRequest = env.CHANGE_ID ?: params.BREAK_GLASS_PR_NUMBER
+                            withCredentials([
+                                string(
+                                    credentialsId: 'break-glass-shared-secret',
+                                    variable: 'BREAK_GLASS_SHARED_SECRET'
+                                )
+                            ]) {
+                                withEnv([
+                                    "BREAK_GLASS_NOTIFY_URL=${params.BREAK_GLASS_NOTIFY_URL}",
+                                    "BREAK_GLASS_STATUS_URL=${params.BREAK_GLASS_STATUS_URL}",
+                                    'BREAK_GLASS_TIMEOUT_SECONDS=900',
+                                    'CI_REPOSITORY=IamRitz/secure-software-delivery',
+                                    "CI_COMMIT_SHA=${env.GIT_COMMIT}",
+                                    "CI_RUN_URL=${env.BUILD_URL}",
+                                    "CI_PULL_REQUEST=${pullRequest}",
+                                    'CI_SYSTEM=jenkins'
+                                ]) {
+                                    sh 'node security/scripts/break-glass-notify.mjs'
+                                    sh 'node security/scripts/break-glass-poll.mjs'
+                                }
+                            }
+                        }
                     }
                 }
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'reports/security-gate.json,reports/gate-exceptions.json', allowEmptyArchive: false
+                    archiveArtifacts artifacts: 'reports/break-glass-request.json,reports/break-glass-decision.json', allowEmptyArchive: true
                 }
             }
         }

@@ -10,6 +10,28 @@ on:
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
+    inputs:
+      break_glass_demo:
+        description: Synthetic eligible BLOCK for the Phase 11 interaction demo
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - sast
+          - dependency
+      break_glass_pr_number:
+        description: PR number that receives the audited decision comment
+        required: false
+        type: string
+      break_glass_notify_url:
+        description: Override the notify webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_NOTIFY_URL
+        required: false
+        type: string
+      break_glass_status_url:
+        description: Override the status webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_STATUS_URL
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -227,8 +249,63 @@ jobs:
           name: sast-reports
           path: reports
 
+      - name: Require explicit dev endpoints for a synthetic demo run
+        # A synthetic BLOCK must never fall back to the production repo Variables.
+        # If break_glass_demo is set, both override URLs must be provided explicitly.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_demo != 'none' && (inputs.break_glass_notify_url == '' || inputs.break_glass_status_url == '') }}
+        run: |
+          echo "A synthetic break_glass_demo run must set BOTH break_glass_notify_url and break_glass_status_url." >&2
+          echo "Refusing to fall back to the production BREAK_GLASS_* repo Variables for a synthetic BLOCK." >&2
+          exit 1
+
+      - name: Apply synthetic eligible BLOCK for a manual demo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.break_glass_demo != 'none' }}
+        env:
+          DEMO_TYPE: ${{ inputs.break_glass_demo }}
+        run: |
+          case "$DEMO_TYPE" in
+            sast)
+              cp security/scripts/__fixtures__/new-high-sast/semgrep.json reports/semgrep.json
+              ;;
+            dependency)
+              cp security/scripts/__fixtures__/critical-with-fix/npm-audit.json reports/npm-audit.json
+              ;;
+            *)
+              echo "Unsupported break-glass demo type: $DEMO_TYPE" >&2
+              exit 1
+              ;;
+          esac
+          echo "Applied synthetic $DEMO_TYPE BLOCK input; no live vulnerable fixture was activated"
+
       - name: Evaluate security policy
+        id: evaluate
+        continue-on-error: true
         run: node security/scripts/security-gate.mjs
+
+      - name: Confirm the BLOCK is eligible before loading any approval credential
+        if: ${{ steps.evaluate.outcome == 'failure' }}
+        run: node security/scripts/break-glass-notify.mjs --check-only
+
+      - name: Request break-glass decision
+        if: ${{ steps.evaluate.outcome == 'failure' }}
+        env:
+          BREAK_GLASS_NOTIFY_URL: ${{ inputs.break_glass_notify_url || vars.BREAK_GLASS_NOTIFY_URL }}
+          BREAK_GLASS_SHARED_SECRET: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
+          BREAK_GLASS_TIMEOUT_SECONDS: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_COMMIT_SHA: ${{ github.sha }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_PULL_REQUEST: ${{ github.event.pull_request.number || inputs.break_glass_pr_number }}
+          CI_SYSTEM: github-actions
+        run: node security/scripts/break-glass-notify.mjs
+
+      - name: Wait for verified break-glass decision
+        if: ${{ steps.evaluate.outcome == 'failure' }}
+        env:
+          BREAK_GLASS_STATUS_URL: ${{ inputs.break_glass_status_url || vars.BREAK_GLASS_STATUS_URL }}
+          BREAK_GLASS_SHARED_SECRET: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
+          BREAK_GLASS_TIMEOUT_SECONDS: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
+        run: node security/scripts/break-glass-poll.mjs
 
       - name: Upload security gate decision
         if: always()
@@ -238,6 +315,8 @@ jobs:
           path: |
             reports/security-gate.json
             reports/gate-exceptions.json
+            reports/break-glass-request.json
+            reports/break-glass-decision.json
           if-no-files-found: error
           retention-days: 14
 
