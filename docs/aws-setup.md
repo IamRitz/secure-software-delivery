@@ -1,8 +1,13 @@
 # AWS setup for the Phase 9 delivery path
 
-> **Status: ECR push, ECR scan, and ECS deployment are structured but have not
-> been run against a real AWS account. Do not interpret a skipped job as an AWS
-> deployment success.**
+> **Status: delivery targets an EC2 Docker host over SSH (ECR push + scan-on-push
+> + `docker pull`/`docker run` on the instance). Wired and pending a first real
+> `main` run; do not interpret a skipped job as a deployment success.**
+>
+> The delivery OIDC role now needs only **ECR push** permissions — the
+> `ecs:UpdateService` grant in the example policy below is no longer required;
+> the image is pulled by the EC2 instance's own read-only ECR role. (The example
+> IAM JSON below still shows the older ECS shape and is being kept for reference.)
 
 The workflow remains safe and useful without AWS. It builds the container on a
 `main` push, prints which configuration is missing, and marks `aws-delivery`
@@ -83,8 +88,20 @@ Never broaden this to all repositories or pull-request subjects.
 | `AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-main-delivery` |
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `secure-software-delivery` |
-| `ECS_CLUSTER` | demo cluster name |
-| `ECS_SERVICE` | demo service name |
+| `EC2_HOST` | public DNS/IP of the deploy instance |
+| `EC2_SSH_USER` (optional) | `ec2-user` (default) or `ubuntu` |
+| `EC2_APP_PORT` (optional) | host port mapped to container `3000` (default `3000`) |
+
+Plus one repository **secret**, `EC2_SSH_PRIVATE_KEY` — the private key whose
+public half is authorized on the instance.
+
+Delivery targets an **EC2 instance running Docker** (not ECS): the runner pushes
+the image to ECR under the OIDC push role, then SSHes to `EC2_HOST` and runs
+`docker pull` + `docker run`. The image is pulled using the **instance's own
+read-only ECR pull role**, so the runner's push credentials never reach the box.
+`aws-configuration` requires `AWS_ROLE_ARN`, `AWS_REGION`, `ECR_REPOSITORY`, and
+`EC2_HOST` to be present; otherwise the AWS stages are skipped. The instance needs
+Docker and the AWS CLI installed.
 
 Only `aws-delivery` declares `id-token: write`; workflow and pre-build jobs
 remain `contents: read`. The workflow pins `configure-aws-credentials` and

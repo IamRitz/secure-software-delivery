@@ -424,11 +424,10 @@ jobs:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+          EC2_HOST: ${{ vars.EC2_HOST }}
         run: |
           missing=()
-          for name in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE; do
+          for name in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY EC2_HOST; do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
@@ -520,14 +519,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Deploy approved image to Amazon ECS
+      - name: Deploy approved image to EC2 over SSH
         env:
+          EC2_HOST: ${{ vars.EC2_HOST }}
+          EC2_SSH_USER: ${{ vars.EC2_SSH_USER || 'ec2-user' }}
+          EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '3000' }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           AWS_REGION: ${{ vars.AWS_REGION }}
-          ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-          ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
-          aws ecs update-service \
-            --cluster "$ECS_CLUSTER" \
-            --service "$ECS_SERVICE" \
-            --force-new-deployment \
-            --region "$AWS_REGION"
+          set -euo pipefail
+          # The runner only holds the SSH key; the image is pulled on the instance
+          # using the EC2's own read-only ECR pull role — the runner's push role is
+          # never shared with the box.
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          # TOFU host key on first connect. A hardened setup would pre-seed known_hosts.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$EC2_SSH_USER@$EC2_HOST" \
+            "set -e
+             aws ecr get-login-password --region '$AWS_REGION' | docker login --username AWS --password-stdin '$ECR_REGISTRY'
+             docker pull '$image'
+             docker rm -f secure-software-delivery 2>/dev/null || true
+             docker run -d --name secure-software-delivery --restart unless-stopped -p '$EC2_APP_PORT':3000 '$image'
+             docker image prune -f"
+          rm -f ~/.ssh/deploy_key
