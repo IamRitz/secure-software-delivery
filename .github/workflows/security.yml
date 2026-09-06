@@ -471,6 +471,20 @@ jobs:
       - name: Load application image
         run: gunzip --stdout application-image.tar.gz | docker load
 
+      - name: Debug OIDC claims (temporary)
+        # Surfaces the exact token claims + role name as a warning annotation so
+        # we can compare against the IAM trust policy. Remove once OIDC works.
+        env:
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
+          claims=$(python3 -c "import base64,json; p='$token'.split('.')[1]; p+='='*(-len(p)%4); d=json.loads(base64.urlsafe_b64decode(p)); print('sub=%s aud=%s iss=%s repository=%s owner=%s ref=%s'%(d.get('sub'),d.get('aud'),d.get('iss'),d.get('repository'),d.get('repository_owner'),d.get('ref')))")
+          echo "$claims"
+          echo "role_name=${ROLE_ARN##*/} role_arn_length=${#ROLE_ARN}"
+          echo "::warning::OIDC_DEBUG $claims role_name=${ROLE_ARN##*/}"
+
       - name: Assume scoped AWS role with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
