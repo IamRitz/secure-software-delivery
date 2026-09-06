@@ -11,7 +11,8 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "start:break-glass": "node --env-file=server/break-glass/.env server/break-glass/server.mjs"
   },
   "dependencies": {
     "express": "5.1.0"

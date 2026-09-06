@@ -91,6 +91,55 @@ gh api repos/IamRitz/secure-software-delivery/branches/main/protection/required_
 
 The response's `contexts` or `checks` list must contain `security-gate`.
 
+## Break-glass exceptions
+
+The gate offers a narrow, audited exception path only when **every** blocking
+finding is either a new high/critical Semgrep finding or a fixable
+high/critical dependency finding. The gate report includes `breakGlass` with
+the eligible and ineligible BLOCK findings. A mixed set containing any hard
+block is not eligible.
+
+Verified secrets, malicious-package (`MAL-`) advisories, report-integrity
+failures, and the safe dummy-secret demo marker have no override path. The CI
+client checks eligibility before its n8n shared-secret credential is loaded,
+so hard blocks never invoke the notification endpoint.
+
+For an eligible BLOCK, CI authenticates to n8n Webhook A, then polls Webhook C.
+Only an `approved` decision makes the existing `security-gate` job successful.
+Denied, expired, malformed, unreachable, or timed-out decisions remain failed.
+
+### Discord and n8n setup
+
+1. In the Discord Developer Portal, create the application and bot, invite it
+   with permission to send/edit messages in the approval channel, and record
+   the application public key separately from the secret bot token.
+2. Import `n8n/workflows/break-glass-workflow.json` into n8n 2.36.x. Attach the
+   three credentials described in `n8n/README.md`, configure the authorized
+   Discord user-ID allowlist, and set workflow concurrency to one.
+3. Publish the workflow. Keep Discord's Interactions Endpoint URL at the
+   already-validated production route
+   `https://n8n.iamritesh.in/webhook/discord/interactions`; never use the
+   `/webhook-test/` URL.
+4. In GitHub, create `BREAK_GLASS_SHARED_SECRET` as an Actions secret. Create
+   repository variables `BREAK_GLASS_NOTIFY_URL`, `BREAK_GLASS_STATUS_URL`,
+   and optionally `BREAK_GLASS_TIMEOUT_SECONDS`. In Jenkins, create a Secret
+   Text credential named `break-glass-shared-secret`.
+
+Discord signs the timestamp concatenated with the exact raw request body.
+Webhook B retains the raw binary body, wraps the 32-byte public key as an
+Ed25519 JWK, and calls Node `crypto.verify`. Invalid signatures return HTTP
+401 before parsing or state access. A signed type-1 PING receives type-1 PONG;
+a signed component interaction receives type-6 deferred acknowledgement
+within Discord's response window.
+
+Authorization uses `member.user.id` (or `user.id` for a DM) against the
+configured Discord-ID allowlist. Usernames are audit display data only.
+Pending requests transition through `processing` before external GitHub and
+Discord updates; duplicate, expired, stale, and unauthorized clicks cannot
+claim a decision. The GitHub PAT is stored only as an n8n credential and posts
+the decision, verified Discord identity, timestamp, findings, and gate digest
+to the affected PR.
+
 ### Phase 8 enforced configuration
 
 The repository was changed from private to public so GitHub Free could enforce

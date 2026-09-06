@@ -56,6 +56,7 @@ describe('security gate', () => {
 
     assert.equal(result.verdict, 'BLOCK');
     assert.equal(onlyFinding(result).policyRule, 'secrets.verified');
+    assert.equal(result.breakGlass.eligible, false);
   });
 
   it('blocks the dedicated non-credential demo marker without calling it verified', async () => {
@@ -75,6 +76,7 @@ describe('security gate', () => {
 
     assert.equal(result.verdict, 'BLOCK');
     assert.equal(onlyFinding(result).policyRule, 'dependencies.critical_with_fix');
+    assert.equal(result.breakGlass.eligible, true);
   });
 
   it('passes with a visible exception for an unfixed critical dependency', async () => {
@@ -94,6 +96,7 @@ describe('security gate', () => {
 
     assert.equal(result.verdict, 'BLOCK');
     assert.equal(onlyFinding(result).policyRule, 'dependencies.malicious_package');
+    assert.equal(result.breakGlass.eligible, false);
   });
 
   it('blocks a critical OSV advisory when its range contains a fix', async () => {
@@ -123,6 +126,7 @@ describe('security gate', () => {
 
     assert.equal(result.verdict, 'BLOCK');
     assert.equal(onlyFinding(result).policyRule, 'sast.high_new');
+    assert.equal(result.breakGlass.eligible, true);
   });
 
   it('logs an existing critical Semgrep finding without blocking', async () => {

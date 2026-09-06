@@ -1,6 +1,8 @@
 node_modules/
 coverage/
 reports/
+n8n/backups/
+server/break-glass/data/
 npm-debug.log*
 .eslintcache
 .env

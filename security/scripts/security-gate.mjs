@@ -113,6 +113,16 @@ function validatePolicy(policy) {
   for (const severity of ['ERROR', 'WARNING', 'INFO']) {
     normalizeSeverity(policyValue(policy, `severity_mapping.semgrep_severity.${severity}`));
   }
+
+  for (const [path, expected] of [
+    ['break_glass.sast_new', 'ELIGIBLE'],
+    ['break_glass.dependency_with_fix', 'ELIGIBLE'],
+    ['break_glass.verified_secrets', 'NEVER'],
+    ['break_glass.malicious_package', 'NEVER'],
+    ['break_glass.report_integrity', 'NEVER']
+  ]) {
+    assert(policyValue(policy, path) === expected, `policy ${path} must remain ${expected}`);
+  }
 }
 
 async function readJson(path, label) {
@@ -460,6 +470,50 @@ function summarize(findings) {
   );
 }
 
+export function isBreakGlassEligibleFinding(finding) {
+  return finding.action === 'BLOCK' && finding.breakGlassEligible === true;
+}
+
+function markBreakGlassEligibility(policy, findings) {
+  for (const finding of findings) {
+    let policyPath;
+    if (['sast.critical_new', 'sast.high_new'].includes(finding.policyRule)) {
+      policyPath = 'break_glass.sast_new';
+    } else if (
+      ['dependencies.critical_with_fix', 'dependencies.high_with_fix'].includes(
+        finding.policyRule
+      )
+    ) {
+      policyPath = 'break_glass.dependency_with_fix';
+    } else if (finding.policyRule === 'secrets.verified') {
+      policyPath = 'break_glass.verified_secrets';
+    } else if (finding.policyRule === 'dependencies.malicious_package') {
+      policyPath = 'break_glass.malicious_package';
+    } else {
+      policyPath = 'break_glass.report_integrity';
+    }
+    finding.breakGlassEligible =
+      finding.action === 'BLOCK' && policyValue(policy, policyPath) === 'ELIGIBLE';
+  }
+}
+
+function breakGlassSummary(verdict, findings) {
+  const blocked = findings.filter((finding) => finding.action === 'BLOCK');
+  const eligibleFindings = blocked.filter(isBreakGlassEligibleFinding);
+  const ineligibleFindings = blocked.filter(
+    (finding) => !isBreakGlassEligibleFinding(finding)
+  );
+
+  return {
+    eligible:
+      verdict === 'BLOCK' &&
+      eligibleFindings.length > 0 &&
+      ineligibleFindings.length === 0,
+    eligibleFindings,
+    ineligibleFindings
+  };
+}
+
 async function writeResults(paths, result) {
   const exceptions = result.findings.filter((finding) => finding.action === 'EXCEPTION');
   await mkdir(dirname(paths.output), { recursive: true });
@@ -492,6 +546,7 @@ export async function runSecurityGate(customPaths = {}) {
     evaluateNpmAudit(policy, npmAudit, findings);
     evaluateOsv(policy, osv, findings);
     evaluateSemgrep(policy, semgrep, baseline, findings);
+    markBreakGlassEligibility(policy, findings);
 
     const summary = summarize(findings);
     const verdict =
@@ -500,19 +555,26 @@ export async function runSecurityGate(customPaths = {}) {
         : summary.exception > 0
           ? 'PASS-WITH-EXCEPTIONS'
           : 'PASS';
-    result = { verdict, summary, findings };
+    result = {
+      verdict,
+      summary,
+      findings,
+      breakGlass: breakGlassSummary(verdict, findings)
+    };
   } catch (error) {
     const finding = {
       source: 'security-gate',
       id: 'report-integrity',
       action: 'BLOCK',
       policyRule: 'gate.report_integrity',
-      reason: error.message
+      reason: error.message,
+      breakGlassEligible: false
     };
     result = {
       verdict: 'BLOCK',
       summary: { block: 1, exception: 0, log: 0 },
-      findings: [finding]
+      findings: [finding],
+      breakGlass: breakGlassSummary('BLOCK', [finding])
     };
   }
 
