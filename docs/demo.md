@@ -32,9 +32,12 @@ Open a PR to `main`. Gitleaks reports rule
 `phase10-demo-dummy-secret`; the gate reports `secrets.demo_dummy` and `BLOCK`.
 The value is generated dummy text, not a TruffleHog-verified credential.
 
-Gitleaks scans full history, so merely deleting the file cannot remove its
-earlier commit from the scan. Deactivate it, record that reversal, then rewrite
-the disposable demo branch to an empty commit with the same tree as `main`:
+On a pull request, Gitleaks scans the branch's commit range
+(`origin/main..HEAD`), which still includes the commit that introduced the
+secret — so merely deleting the file in a later commit cannot remove that
+earlier commit from the range. Deactivate it, record that reversal, then rewrite
+the disposable demo branch to an empty commit with the same tree as `main`
+(which empties the range):
 
 ```sh
 node security/fixtures/deactivate.mjs secret
