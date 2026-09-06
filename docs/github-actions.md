@@ -59,3 +59,22 @@ For the controlled interaction demo, `workflow_dispatch` accepts
 `break_glass_demo` (`sast` or `dependency`) and `break_glass_pr_number`. It
 copies an existing synthetic Phase 8 report into the gate job only; no live
 vulnerable content is activated or installed.
+
+## Commit-range scan scope
+
+Secret (Gitleaks, TruffleHog) and SAST (Semgrep) scans are scoped by trigger to
+keep PR feedback fast without weakening the weekly sweep:
+
+- **`pull_request`** — only the branch's commits since the merge-base with the
+  target branch (`git merge-base origin/$GITHUB_BASE_REF HEAD`). Gitleaks uses
+  `--log-opts=<base>..HEAD`, TruffleHog `--since-commit=<base>`, Semgrep
+  `--baseline-commit=<base>`.
+- **`push` to `main`** — only commits since the previous `main` tip
+  (`github.event.before`); falls back to a full scan if that commit is missing.
+- **`schedule` (weekly) / `workflow_dispatch`** — full history / full tree,
+  unchanged.
+
+npm audit and OSV-Scanner are unaffected: they inspect current lockfile state,
+not commit history. Semgrep's `--baseline-commit` (what is *scanned*) is
+independent of `semgrep-baseline.json`'s new-vs-existing reporting (what is
+*reported*); both remain in effect.

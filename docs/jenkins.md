@@ -129,3 +129,13 @@ check without credentials. Only then does it bind the Secret Text credential
 `CHANGE_ID` supplies the PR number for Multibranch PR builds;
 `BREAK_GLASS_PR_NUMBER` is the manual fallback. A hard block, denied decision,
 timeout, missing credential, or endpoint error propagates as a failed stage.
+
+## Commit-range scan scope
+
+The Checkout stage resolves an incremental base the same way as GitHub Actions:
+PR builds (`CHANGE_ID`) diff against `git merge-base origin/$CHANGE_TARGET HEAD`;
+`main` builds diff against the previously built commit (`GIT_PREVIOUS_COMMIT`);
+the weekly `cron` build (a `TimerTrigger`) and first builds scan full history.
+The resolved flags (`--log-opts`, `--since-commit`, `--baseline-commit`) are
+exported as env vars and consumed by the Gitleaks, TruffleHog, and Semgrep
+stages. npm audit and OSV-Scanner are unaffected (lockfile state, not history).

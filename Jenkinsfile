@@ -35,6 +35,39 @@ pipeline {
                         returnStdout: true
                     ).trim()
                     echo "Checked out commit ${env.GIT_COMMIT}"
+
+                    // Incremental scan scope, mirroring the GitHub Actions logic:
+                    //   PR build (CHANGE_ID)  -> merge-base with the target branch
+                    //   main build            -> previous built commit (GIT_PREVIOUS_COMMIT)
+                    //   weekly cron / first build / anything else -> full scan
+                    // npm audit and OSV-Scanner are unaffected: they inspect current
+                    // lockfile state, not commit history.
+                    boolean isTimer = currentBuild
+                        .getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause')
+                        .size() > 0
+                    String base = ''
+                    if (isTimer) {
+                        echo 'Timer-triggered build: full history scan'
+                    } else if (env.CHANGE_ID) {
+                        sh(script: "git fetch --no-tags origin ${env.CHANGE_TARGET} || true", returnStatus: true)
+                        base = sh(script: "git merge-base origin/${env.CHANGE_TARGET} HEAD || true", returnStdout: true).trim()
+                    } else if (env.GIT_PREVIOUS_COMMIT) {
+                        String prev = env.GIT_PREVIOUS_COMMIT
+                        if (sh(script: "git cat-file -e ${prev}^{commit} 2>/dev/null", returnStatus: true) == 0) {
+                            base = prev
+                        }
+                    }
+                    if (base) {
+                        env.GITLEAKS_LOG_OPTS = "--log-opts=${base}..HEAD"
+                        env.TRUFFLEHOG_SINCE = "--since-commit=${base}"
+                        env.SEMGREP_BASELINE = "--baseline-commit=${base}"
+                        echo "Incremental scan since ${base}"
+                    } else {
+                        env.GITLEAKS_LOG_OPTS = '--log-opts=HEAD'
+                        env.TRUFFLEHOG_SINCE = ''
+                        env.SEMGREP_BASELINE = ''
+                        echo 'Full-history scan'
+                    }
                 }
             }
         }
@@ -46,7 +79,7 @@ pipeline {
                         sh 'mkdir -p reports'
                         script {
                             docker.image('ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f').inside('--entrypoint=') {
-                                sh 'gitleaks git . --config .gitleaks.toml --log-opts=HEAD --platform github --no-banner --redact=100 --report-format json --report-path reports/gitleaks.json --exit-code 0'
+                                sh 'gitleaks git . --config .gitleaks.toml ${GITLEAKS_LOG_OPTS} --platform github --no-banner --redact=100 --report-format json --report-path reports/gitleaks.json --exit-code 0'
                             }
                         }
                     }
@@ -62,7 +95,7 @@ pipeline {
                         sh 'mkdir -p reports'
                         script {
                             docker.image('trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08').inside('--entrypoint=') {
-                                sh 'trufflehog git "file://$WORKSPACE" --json --no-update --exclude-paths=.trufflehog-exclude-paths.txt --results=verified,unverified,unknown --no-fail --fail-on-scan-errors > reports/trufflehog.raw.jsonl'
+                                sh 'trufflehog git "file://$WORKSPACE" --json --no-update ${TRUFFLEHOG_SINCE} --exclude-paths=.trufflehog-exclude-paths.txt --results=verified,unverified,unknown --no-fail --fail-on-scan-errors > reports/trufflehog.raw.jsonl'
                             }
                             docker.image('node:22.23.2-alpine3.24').inside {
                                 sh 'node security/scripts/normalize-trufflehog.mjs reports/trufflehog.raw.jsonl reports/trufflehog.json'
@@ -134,12 +167,13 @@ pipeline {
             steps {
                 sh 'mkdir -p reports'
                 script {
-                    docker.image('semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e').inside('--entrypoint=') {
+                    docker.image('semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e').inside("--entrypoint= -e HOME=/tmp -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=${env.WORKSPACE}") {
                         sh '''
                             semgrep scan \
                                 --config p/owasp-top-ten \
                                 --config p/javascript \
                                 --config security/semgrep-rules.yml \
+                                ${SEMGREP_BASELINE} \
                                 --json-output=reports/semgrep.json \
                                 --metrics=off \
                                 --disable-version-check \

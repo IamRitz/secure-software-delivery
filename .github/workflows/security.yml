@@ -57,13 +57,41 @@ jobs:
       - name: Create report directory
         run: mkdir -p reports
 
+      - name: Determine secret scan scope
+        # pull_request: only commits on the branch since the merge-base with the base branch.
+        # push to main: only commits since the previous main tip (github.event.before).
+        # schedule / dispatch / anything else: full history.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          BASE_SHA=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
+            BASE_SHA="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              BASE_SHA="$BEFORE_SHA"
+            fi
+          fi
+          if [ -n "$BASE_SHA" ]; then
+            echo "GITLEAKS_LOG_OPTS=--log-opts=${BASE_SHA}..HEAD" >> "$GITHUB_ENV"
+            echo "TRUFFLEHOG_SINCE=--since-commit=${BASE_SHA}" >> "$GITHUB_ENV"
+            echo "Incremental secret scan range ${BASE_SHA}..HEAD (event=$EVENT_NAME)"
+          else
+            echo "GITLEAKS_LOG_OPTS=--log-opts=HEAD" >> "$GITHUB_ENV"
+            echo "TRUFFLEHOG_SINCE=" >> "$GITHUB_ENV"
+            echo "Full-history secret scan (event=$EVENT_NAME)"
+          fi
+
       - name: Run Gitleaks (report only)
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$GITHUB_WORKSPACE/reports:/reports" \
             ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git /repo --config /repo/.gitleaks.toml --log-opts=HEAD --platform github \
+            git /repo --config /repo/.gitleaks.toml ${GITLEAKS_LOG_OPTS} --platform github \
             --no-banner --redact=100 --report-format json \
             --report-path /reports/gitleaks.json --exit-code 0
 
@@ -72,7 +100,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
-            git file:///repo --json --no-update \
+            git file:///repo --json --no-update ${TRUFFLEHOG_SINCE} \
             --exclude-paths=/repo/.trufflehog-exclude-paths.txt \
             --results=verified,unverified,unknown --no-fail \
             --fail-on-scan-errors > reports/trufflehog.raw.jsonl
@@ -170,6 +198,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # Full history so Semgrep can diff against the baseline commit.
+          fetch-depth: 0
 
       - name: Set up Node.js for report validation
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -180,17 +210,46 @@ jobs:
       - name: Create report directory
         run: mkdir -p reports
 
+      - name: Determine SAST scan scope
+        # pull_request: only files changed since the merge-base with the base branch.
+        # push to main: only files changed since the previous main tip (github.event.before).
+        # schedule / dispatch / anything else: full scan (no baseline).
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          BASE_SHA=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
+            BASE_SHA="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              BASE_SHA="$BEFORE_SHA"
+            fi
+          fi
+          if [ -n "$BASE_SHA" ]; then
+            echo "SEMGREP_BASELINE=--baseline-commit=${BASE_SHA}" >> "$GITHUB_ENV"
+            echo "Incremental SAST scan since ${BASE_SHA} (event=$EVENT_NAME)"
+          else
+            echo "SEMGREP_BASELINE=" >> "$GITHUB_ENV"
+            echo "Full-tree SAST scan (event=$EVENT_NAME)"
+          fi
+
       - name: Run Semgrep OSS (report only)
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/src:ro" \
             -v "$GITHUB_WORKSPACE/reports:/reports" \
             -w /src \
+            -e HOME=/tmp \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
             semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e \
             semgrep scan \
             --config p/owasp-top-ten \
             --config p/javascript \
             --config security/semgrep-rules.yml \
+            ${SEMGREP_BASELINE} \
             --json-output=/reports/semgrep.json \
             --metrics=off \
             --disable-version-check \
