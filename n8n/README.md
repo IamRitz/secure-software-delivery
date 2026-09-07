@@ -89,7 +89,7 @@ Required n8n environment values (same `.env`, recreate the container after):
 
 ```text
 SLACK_SIGNING_SECRET=<app Signing Secret — HMAC key, never committed>
-SLACK_APPROVER_IDS=<comma-separated Slack member IDs — distinct from DISCORD_APPROVER_IDS>
+SLACK_APPROVER_IDS_BY_REPO=<JSON map "owner/repo" -> ["Uxxx",...]; repo absent = nobody; bad JSON = nobody>
 SLACK_CHANNEL_ID=<channel the bot is invited to>
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```

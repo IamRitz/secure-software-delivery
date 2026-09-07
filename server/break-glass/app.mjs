@@ -189,7 +189,11 @@ export function createBreakGlassApp({
     if (!decision) {
       return slack.respond(interaction.response_url, ephemeral('Invalid or stale approval control.'));
     }
-    const auth = authorizeSlackInteraction({ interaction, authorizedUserIds: config.approverIds });
+    // The repo identity comes from the STORED pending request (set at notify time
+    // from the CI payload) — never from the click payload, which has no repo notion.
+    const pending = store.get(decision.requestId);
+    const repo = pending?.context?.repository;
+    const auth = authorizeSlackInteraction({ interaction, repo, approverMap: config.approverMap });
     if (!auth.authorized) {
       return slack.respond(
         interaction.response_url,

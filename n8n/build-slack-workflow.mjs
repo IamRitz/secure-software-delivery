@@ -118,11 +118,14 @@ const claim = [
   "const action = match[2];",
   "const user = interaction.user;",
   "if (!user || !user.id) return [{ json: { outcome: 'rejected', interaction: interaction, requestId: requestId, message: 'Slack did not provide a user identity.' } }];",
-  "const allowed = new Set(String($env.SLACK_APPROVER_IDS || '').split(',').map(v => v.trim()).filter(Boolean));",
-  "if (!allowed.has(String(user.id))) return [{ json: { outcome: 'unauthorized', interaction: interaction, requestId: requestId, message: 'You are not an authorized break-glass approver.' } }];",
   "const state = $getWorkflowStaticData('global');",
   "const request = state.requests && state.requests[requestId];",
   "if (!request) return [{ json: { outcome: 'rejected', interaction: interaction, requestId: requestId, message: 'Unknown approval request.' } }];",
+  "const repo = request.context && request.context.repository;",
+  "let approverMap = {};",
+  "try { approverMap = JSON.parse($env.SLACK_APPROVER_IDS_BY_REPO || '{}') || {}; } catch (e) { approverMap = {}; }",
+  "const allowed = new Set(Array.isArray(approverMap[repo]) ? approverMap[repo].map(String) : []);",
+  "if (!allowed.has(String(user.id))) return [{ json: { outcome: 'unauthorized', interaction: interaction, requestId: requestId, message: 'You are not an authorized break-glass approver.' } }];",
   "if (new Date(request.expiresAt) <= new Date()) { if (request.status === 'pending') request.status = 'expired'; return [{ json: { outcome: 'rejected', interaction: interaction, requestId: requestId, message: 'This approval request has expired.' } }]; }",
   "if (request.status !== 'pending') return [{ json: { outcome: 'duplicate', interaction: interaction, requestId: requestId, message: 'Request is already ' + request.status + '.' } }];",
   "request.status = 'processing';",
@@ -202,7 +205,7 @@ const workflow = {
   meta: {
     templateCredsSetupCompleted: false,
     phase: '11-slack',
-    note: 'Requires n8n env: SLACK_SIGNING_SECRET (HMAC key, NEVER hardcode), SLACK_APPROVER_IDS (comma-separated Slack member IDs), SLACK_CHANNEL_ID (bot-invited channel). Reuses the Break Glass Shared Secret and GitHub PAT header-auth credentials; add a Slack Bot Token header-auth credential (Authorization: Bearer xoxb-...). Set N8N_BLOCK_ENV_ACCESS_IN_NODE=false. Discord workflow is separate and untouched.'
+    note: 'Requires n8n env: SLACK_SIGNING_SECRET (HMAC key, NEVER hardcode), SLACK_APPROVER_IDS_BY_REPO (JSON map of "owner/repo" -> ["Uxxx",...]; a repo absent from the map authorizes nobody; malformed JSON = empty map = nobody), SLACK_CHANNEL_ID (bot-invited channel). Reuses the Break Glass Shared Secret and GitHub PAT header-auth credentials; add a Slack Bot Token header-auth credential (Authorization: Bearer xoxb-...). Set N8N_BLOCK_ENV_ACCESS_IN_NODE=false. Discord workflow is separate and untouched.'
   },
   tags: []
 };
