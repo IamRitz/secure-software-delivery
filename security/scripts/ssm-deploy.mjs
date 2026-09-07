@@ -145,10 +145,15 @@ export async function deployViaSsm(options) {
         );
       }
     } else {
-      console.log(`SSM invocation attempt ${attempt}/${options.maxAttempts}: pending`);
-      if (attempt === options.maxAttempts) {
-        throw new Error(`ssm get-command-invocation failed: ${result.stderr.trim()}`);
+      const stderr = result.stderr.trim();
+      // Only "the invocation does not exist yet" is a legitimate transient right
+      // after send-command; anything else (AccessDenied, InvalidInstanceId, ...)
+      // is permanent — fail fast instead of polling for the whole window.
+      const transient = /InvocationDoesNotExist/i.test(stderr);
+      if (!transient || attempt === options.maxAttempts) {
+        throw new Error(`ssm get-command-invocation failed: ${stderr}`);
       }
+      console.log(`SSM invocation attempt ${attempt}/${options.maxAttempts}: not registered yet`);
     }
     if (attempt < options.maxAttempts) await delay(options.delaySeconds * 1000);
   }
@@ -157,8 +162,15 @@ export async function deployViaSsm(options) {
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  await deployViaSsm(options);
-  console.log('SSM deploy succeeded');
+  try {
+    await deployViaSsm(options);
+    console.log('SSM deploy succeeded');
+  } catch (error) {
+    // Surface the reason as a GitHub Actions annotation (a harmless log line
+    // elsewhere) so it is visible without opening the full step log.
+    console.log(`::error::ssm-deploy failed: ${error.message}`);
+    throw error;
+  }
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
