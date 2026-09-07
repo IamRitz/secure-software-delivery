@@ -14,8 +14,8 @@ pipeline {
         string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS region')
         string(name: 'AWS_ACCOUNT_ID', defaultValue: '', description: 'Twelve-digit AWS account ID')
         string(name: 'ECR_REPOSITORY', defaultValue: 'secure-software-delivery', description: 'ECR repository name')
-        string(name: 'ECS_CLUSTER', defaultValue: '', description: 'ECS cluster name')
-        string(name: 'ECS_SERVICE', defaultValue: '', description: 'ECS service whose task uses the :demo tag')
+        string(name: 'EC2_INSTANCE_ID', defaultValue: '', description: 'EC2 instance ID to deploy to via SSM (e.g. i-0123...)')
+        string(name: 'EC2_APP_PORT', defaultValue: '3000', description: 'Host port mapped to the container 3000')
         string(name: 'BREAK_GLASS_PR_NUMBER', defaultValue: '', description: 'PR number for an audited exception; Multibranch CHANGE_ID is preferred')
         string(name: 'BREAK_GLASS_NOTIFY_URL', defaultValue: 'https://n8n.iamritesh.in/webhook/break-glass/notify', description: 'Authenticated n8n notify endpoint')
         string(name: 'BREAK_GLASS_STATUS_URL', defaultValue: 'https://n8n.iamritesh.in/webhook/break-glass/status', description: 'Authenticated n8n status endpoint')
@@ -296,12 +296,12 @@ pipeline {
             steps {
                 script {
                     if (params.ENABLE_AWS_DELIVERY) {
-                        def missing = ['AWS_ACCOUNT_ID', 'AWS_REGION', 'ECR_REPOSITORY', 'ECS_CLUSTER', 'ECS_SERVICE']
+                        def missing = ['AWS_ACCOUNT_ID', 'AWS_REGION', 'ECR_REPOSITORY', 'EC2_INSTANCE_ID']
                             .findAll { !params[it]?.trim() }
                         if (missing) {
                             error("AWS delivery was enabled but configuration is missing: ${missing.join(', ')}")
                         }
-                        echo 'AWS delivery enabled; real ECR, scan, gate, and ECS stages will run'
+                        echo 'AWS delivery enabled; real ECR, scan, gate, and EC2/SSM deploy stages will run'
                     } else {
                         echo 'AWS not configured — ECR push, image scan, deploy gate, and deploy skipped; see docs/aws-setup.md'
                     }
@@ -449,6 +449,11 @@ pipeline {
             }
             steps {
                 script {
+                    def registry = "${params.AWS_ACCOUNT_ID}.dkr.ecr.${params.AWS_REGION}.amazonaws.com"
+                    def dockerSocketGroup = sh(
+                        script: "stat -c '%g' /var/run/docker.sock",
+                        returnStdout: true
+                    ).trim()
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'jenkins-aws-deploy',
@@ -456,17 +461,31 @@ pipeline {
                             passwordVariable: 'AWS_SECRET_ACCESS_KEY'
                         )
                     ]) {
-                        sh """
-                            docker run --rm \\
-                                -e AWS_ACCESS_KEY_ID \\
-                                -e AWS_SECRET_ACCESS_KEY \\
-                                amazon/aws-cli@sha256:269b824fd142de9de0bd6fa2e78cdcf3012c1b05f1792a8e44b30ad80680c83d \\
-                                ecs update-service \\
-                                --cluster '${params.ECS_CLUSTER}' \\
-                                --service '${params.ECS_SERVICE}' \\
-                                --force-new-deployment \\
-                                --region '${params.AWS_REGION}'
-                        """
+                        withEnv([
+                            "AWS_REGION=${params.AWS_REGION}",
+                            "AWS_DEFAULT_REGION=${params.AWS_REGION}",
+                            "ECR_REGISTRY=${registry}",
+                            "ECR_REPOSITORY=${params.ECR_REPOSITORY}",
+                            "EC2_INSTANCE_ID=${params.EC2_INSTANCE_ID}",
+                            "EC2_APP_PORT=${params.EC2_APP_PORT ?: '3000'}"
+                        ]) {
+                            docker.image('node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5').inside(
+                                "--group-add ${dockerSocketGroup} " +
+                                '-v /var/run/docker.sock:/var/run/docker.sock ' +
+                                '-v /usr/bin/docker:/usr/bin/docker:ro'
+                            ) {
+                                sh '''
+                                    node security/scripts/ssm-deploy.mjs \
+                                        --instance-id "$EC2_INSTANCE_ID" \
+                                        --region "$AWS_REGION" \
+                                        --registry "$ECR_REGISTRY" \
+                                        --repository "$ECR_REPOSITORY" \
+                                        --image-tag "$GIT_COMMIT" \
+                                        --app-port "$EC2_APP_PORT" \
+                                        --aws-cli-container amazon/aws-cli@sha256:269b824fd142de9de0bd6fa2e78cdcf3012c1b05f1792a8e44b30ad80680c83d
+                                '''
+                            }
+                        }
                     }
                 }
             }
