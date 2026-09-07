@@ -88,20 +88,27 @@ Never broaden this to all repositories or pull-request subjects.
 | `AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-main-delivery` |
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `secure-software-delivery` |
-| `EC2_HOST` | public DNS/IP of the deploy instance |
-| `EC2_SSH_USER` (optional) | `ec2-user` (default) or `ubuntu` |
+| `EC2_INSTANCE_ID` | `i-0123456789abcdef0` (the SSM deploy target) |
 | `EC2_APP_PORT` (optional) | host port mapped to container `3000` (default `3000`) |
 
-Plus one repository **secret**, `EC2_SSH_PRIVATE_KEY` — the private key whose
-public half is authorized on the instance.
+Delivery targets an **EC2 instance running Docker** (not ECS), driven over **AWS
+Systems Manager**, not SSH: the runner pushes the image to ECR under the OIDC push
+role, then `aws ssm send-command` runs `docker login`/`pull`/`run` on the instance
+(polled via `ssm:GetCommandInvocation`). The image is pulled using the
+**instance's own read-only ECR role**, so the runner's push credentials never
+reach the box, and **no inbound port (22 or otherwise) is required**.
 
-Delivery targets an **EC2 instance running Docker** (not ECS): the runner pushes
-the image to ECR under the OIDC push role, then SSHes to `EC2_HOST` and runs
-`docker pull` + `docker run`. The image is pulled using the **instance's own
-read-only ECR pull role**, so the runner's push credentials never reach the box.
 `aws-configuration` requires `AWS_ROLE_ARN`, `AWS_REGION`, `ECR_REPOSITORY`, and
-`EC2_HOST` to be present; otherwise the AWS stages are skipped. The instance needs
-Docker and the AWS CLI installed.
+`EC2_INSTANCE_ID`; otherwise the AWS stages are skipped. The instance needs Docker,
+the AWS CLI, and the SSM agent, with `AmazonSSMManagedInstanceCore` on its role;
+the delivery/OIDC role needs `ssm:SendCommand` + `ssm:GetCommandInvocation` scoped
+to the instance. The Jenkins pipeline uses the same `ssm-deploy.mjs` script with an
+`EC2_INSTANCE_ID` parameter and the `jenkins-aws-deploy` credential.
+
+> **Port 22 is not used by CI.** SSM needs no inbound SSH. Close port 22 in the
+> security group, or restrict it to specific known IPs only for occasional manual
+> human debugging — separate from CI, which no longer touches it. Once the SSM
+> path is verified, the old `EC2_SSH_PRIVATE_KEY` secret can be deleted.
 
 Only `aws-delivery` declares `id-token: write`; workflow and pre-build jobs
 remain `contents: read`. The workflow pins `configure-aws-credentials` and
