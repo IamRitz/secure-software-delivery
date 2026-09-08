@@ -6,10 +6,17 @@ FROM node:22.23.2-alpine3.24
 # published the fixed package.
 RUN apk --no-cache upgrade
 
+# Pin npm to a version that supports min-release-age (the base image ships
+# npm 10.x, which silently ignores it). Done before .npmrc is present, so this
+# self-upgrade is not itself subject to the release-age filter.
+RUN npm install -g npm@12.0.2
+
 ENV NODE_ENV=production
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# .npmrc carries min-release-age=7, so the image build refuses to install any
+# dependency published in the last 7 days — the same policy enforced in CI.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --chown=node:node src ./src

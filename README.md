@@ -34,9 +34,15 @@ npm start
 
 The committed lockfile is authoritative. Local automation and all CI
 jobs must use `npm ci`, never `npm install`, so dependency resolution cannot
-silently rewrite it. The repository's current npm 10.9.2 does not support
-`min-release-age`; `.npmrc` records the seven-day setting in commented form and
-the requirement to enable it with npm 11.10.0 or newer.
+silently rewrite it. `.npmrc` enables `min-release-age=7`, which refuses to
+install any dependency version published in the last 7 days — a fail-closed
+guard against freshly-compromised releases. Every install point (the `ci.yml`
+checks, Jenkins, and the Dockerfile) pins npm to 12.0.2 to enforce it; work
+locally with npm 11.10 or newer for the same protection (npm 10.x silently
+ignores the setting, so it degrades gracefully rather than breaking). This is
+the install-time twin of Dependabot's 7-day `cooldown`
+(`.github/dependabot.yml`), which keeps too-fresh versions out of proposed
+updates in the first place.
 
 The service listens on `http://localhost:3000` by default. Set `PORT` to use a
 different port.

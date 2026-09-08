@@ -66,6 +66,37 @@ The security workflow and Jenkins pipeline run weekly because advisory data
 can change even when the lockfile does not. The standalone application checks
 workflow remains event-driven and has no cron schedule.
 
+### Supply-chain install controls
+
+Scanning finds *known* advisories; it does nothing against a brand-new
+compromised release that has no advisory yet. Two complementary controls guard
+that window, both built on the same 7-day rule:
+
+- **`min-release-age=7` (`.npmrc`) — install-time, fail-closed.** npm refuses to
+  install any dependency version published fewer than 7 days ago. This is now
+  *implemented*, not deferred: the base image ships npm 10.x, which silently
+  ignores the setting, so every install point pins npm to **12.0.2** first — the
+  `ci.yml` application checks, the Jenkins `Install` stage, and the Dockerfile
+  (which also copies `.npmrc`, so the image build honours the same floor). The
+  self-upgrade runs under the old npm, which ignores `.npmrc`, so it is not
+  itself blocked; the subsequent `npm ci` runs under npm 12 and enforces the
+  floor. Verified: under npm 12.0.2 + `min-release-age=7`, both production and
+  full `npm ci` install every currently-locked version, and the image builds
+  clean. Older toolchains (npm 10.x) degrade gracefully — the setting is ignored,
+  not an error — so a developer on stock npm is never blocked, just unprotected.
+  The correct value is a bare number of days (`7`); the earlier `"7 days"` string
+  form never shipped in npm.
+- **Dependabot `cooldown: 7` (`.github/dependabot.yml`) — proposal-time,
+  preventive.** Dependabot delays opening a version-bump PR until the release is
+  at least 7 days old, so a too-fresh version is never proposed into the lockfile
+  to begin with.
+
+The distinction matters: the **cooldown delays PR creation** (upstream, before a
+version can enter the lockfile), while **`min-release-age` blocks installation**
+(downstream, refusing a too-fresh version even if it reached the lockfile another
+way). Preventive plus fail-closed, one 7-day principle. Dependabot also advances
+the repo's SHA-pinned GitHub Actions so those pins do not silently go stale.
+
 ## Static application security testing
 
 Semgrep OSS scans the application with two explicit Registry rulesets and one

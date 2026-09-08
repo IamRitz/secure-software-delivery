@@ -30,6 +30,13 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Pin npm to a min-release-age-capable version
+        # The runner's Node ships npm 10.x, which ignores min-release-age. This
+        # upgrade runs under npm 10 (which ignores the .npmrc setting), so the
+        # self-upgrade is not blocked; the npm ci below then runs under npm 12
+        # and enforces the 7-day install floor.
+        run: npm install -g npm@12.0.2
+
       - name: Install locked dependencies
         run: npm ci
 
