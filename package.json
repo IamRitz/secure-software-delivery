@@ -15,7 +15,8 @@
     "start:break-glass": "node --env-file=server/break-glass/.env server/break-glass/server.mjs"
   },
   "dependencies": {
-    "express": "5.1.0"
+    "express": "5.1.0",
+    "minimist": "1.2.5"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
