@@ -116,6 +116,28 @@ For an eligible BLOCK, CI authenticates to n8n Webhook A, then polls Webhook C.
 Only an `approved` decision makes the existing `security-gate` job successful.
 Denied, expired, malformed, unreachable, or timed-out decisions remain failed.
 
+### Slack path (active) — n8n webhooks and CI variables
+
+The live Slack workflow is `Sekure - Slack Break-Glass (DEV)` (n8n id
+`g74Plh4qiwhcEPiQ`). Its webhook paths are prefixed `dev/slack/`, so the exact
+URLs CI must use are:
+
+| Repository variable | Value |
+| --- | --- |
+| `BREAK_GLASS_NOTIFY_URL` | `https://n8n.iamritesh.in/webhook/dev/slack/break-glass/notify` |
+| `BREAK_GLASS_STATUS_URL` | `https://n8n.iamritesh.in/webhook/dev/slack/break-glass/status` |
+| `BREAK_GLASS_TIMEOUT_SECONDS` | `900` (optional) |
+
+The Slack app's own **Interactivity Request URL** points at
+`https://n8n.iamritesh.in/webhook/dev/slack/interactions` (that is Slack-app
+config, not a CI variable). `BREAK_GLASS_SHARED_SECRET` is an Actions **secret**
+(not a variable) matching the notify/status webhooks' shared-secret credential.
+
+The path prefix matters: dropping `dev/slack/` (e.g. `.../webhook/break-glass/notify`)
+is **not** a registered route and the notify step fails with
+`BREAK-GLASS: DENIED (notification endpoint returned HTTP 404)` — the gate BLOCK
+and eligibility check are correct; only the URL is wrong.
+
 ### Discord path (built, frozen) and n8n setup
 
 1. In the Discord Developer Portal, create the application and bot, invite it
