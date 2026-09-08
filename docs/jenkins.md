@@ -30,7 +30,9 @@ container: `node:22.23.2-alpine3.24`.
     disabled and emits a visible skip explanation.
 11. **ECR Push**, **Image Scan**, **Deploy Gate**, and **Deploy** run only when
     `ENABLE_AWS_DELIVERY` is explicitly enabled. The image gate calls the same
-    fail-closed Node script used by GitHub Actions.
+    fail-closed Node script used by GitHub Actions, and **Deploy** runs the same
+    shared `ssm-deploy.mjs` — an EC2 deploy over AWS Systems Manager
+    (`aws ssm send-command`), not ECS and not SSH.
 
 The image-scan polling helper runs in an exact-version, digest-pinned Node 22
 slim container with the controller's Docker client and socket mounted so it
@@ -76,8 +78,10 @@ When AWS delivery is enabled, ECR push and scan bind only the
 `jenkins-aws-ecr` username/password credential, mapping the access-key ID to
 the username and secret key to the password. Deploy binds a separate
 `jenkins-aws-deploy` credential. Keeping these identities separate permits an
-ECR-only policy for the former and an ECS-update-only policy for the latter.
-The credentials exist only inside their `withCredentials` blocks.
+ECR-only policy for the former and an SSM-only policy for the latter
+(`ssm:SendCommand` on the instance + `AWS-RunShellScript` document, and
+`ssm:GetCommandInvocation`). The credentials exist only inside their
+`withCredentials` blocks.
 
 Static IAM access keys are a deliberate Jenkins tradeoff because a controller
 does not receive GitHub-hosted runner OIDC tokens. Prefer workload identity or
@@ -117,15 +121,22 @@ one-minute folder scan, which discovers branch revisions but is not a periodic
 pipeline security run. Scheduled and non-`main` builds stop before Docker, so
 pull requests and weekly refreshes remain checks-and-gate only.
 
-Phase 9 verification uses the default `ENABLE_AWS_DELIVERY=false`. A genuine
-Jenkins run must show Docker Build succeeding, AWS Configuration printing the
-not-configured message, and all four AWS-dependent stages as skipped. ECR,
-image scan, and ECS deployment remain unverified until real AWS resources and
-both documented Jenkins credentials exist.
+With the default `ENABLE_AWS_DELIVERY=false`, a Jenkins run shows Docker Build
+succeeding, AWS Configuration printing the not-configured message, and all four
+AWS-dependent stages skipped. The EC2/SSM conversion (detection on
+`EC2_INSTANCE_ID`, the `ssm-deploy.mjs` Deploy stage) has been **confirmed
+correct on a real controller run** — a parameterized `main` build reached the
+AWS path and printed "EC2/SSM deploy stages will run". However, the SSM **Deploy
+stage itself has not executed against real AWS**: the run stopped at ECR Push
+because this controller lacks the `jenkins-aws-ecr` credential (deliberately
+deferred). So the Jenkins EC2/SSM deploy is **structured-but-unverified** — do
+not read it as proven. GitHub Actions is the platform where the full delivery
+path ran for real.
 
 For an eligible security BLOCK, Jenkins first runs the shared eligibility
 check without credentials. Only then does it bind the Secret Text credential
-`break-glass-shared-secret`, notify n8n, and poll for the Discord decision.
+`break-glass-shared-secret`, notify the break-glass service, and poll for the
+decision (Slack is the active approval platform; Discord is frozen).
 `CHANGE_ID` supplies the PR number for Multibranch PR builds;
 `BREAK_GLASS_PR_NUMBER` is the manual fallback. A hard block, denied decision,
 timeout, missing credential, or endpoint error propagates as a failed stage.

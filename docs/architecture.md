@@ -23,7 +23,7 @@ checkout
                                            │          │
                                     BLOCK_DEPLOY     DEPLOY
                                            │          │
-                                          stop      ECS deploy
+                                          stop      EC2 deploy (SSM)
 ```
 
 Every component through the security gate has zero AWS/ECR/deployment
@@ -45,8 +45,16 @@ operating-system packages inherited from the Node Alpine base image. ECR basic
 scan-on-push covers that POC need. Amazon Inspector enhanced continuous
 scanning is a production upgrade, not part of this small demonstration.
 
-> **AWS-dependent stages: structured and unit-tested, not yet run against real
-> infrastructure.** Local Docker build and deploy-gate decisions are verified;
-> ECR push, ECR scanning, and ECS deployment are not claimed as successful.
+Deployment targets an **EC2 Docker host over AWS Systems Manager**
+(`aws ssm send-command`), not ECS and not SSH — the instance pulls from ECR with
+its own read-only role, so no inbound port and no runner-held key are involved.
+
+> **AWS delivery status (honest split).** On **GitHub Actions** the full path has
+> run against real AWS: ECR push, scan-on-push (which caught real base-image
+> OpenSSL CVEs), the fail-closed deploy gate, and the EC2/SSM deploy — verified
+> end-to-end with the app responding on `/health`. On **Jenkins** the same
+> EC2/SSM conversion is confirmed correct on a real controller run, but the SSM
+> deploy stage itself has not executed for real (missing controller credentials,
+> deliberately deferred) — structured-but-unverified.
 
 AWS prerequisites and least-privilege policies are in `docs/aws-setup.md`.
