@@ -16,34 +16,16 @@ its exit code directly determines the required check result. Redacted secret
 reports, native dependency reports, Semgrep JSON, and gate decisions are
 retained as workflow artifacts for 14 days.
 
-## Scanner image caching
+## Build layer caching
 
-Ephemeral runners start with an empty Docker store, so each scanner job would
-otherwise pull its pinned container image over the network on every run. The
-secret and dependency jobs instead restore their images (Gitleaks, TruffleHog,
-OSV-Scanner) from an `actions/cache`, via `security/scripts/cache-scanner-image.sh`:
+Each scanner runs in its pinned (`@sha256:`) container, pulled by digest on every
+run. Caching the scanner images was tried and dropped: on GitHub-hosted runners
+the small/medium images (Gitleaks, TruffleHog, OSV-Scanner) pull fast enough that
+an `actions/cache` round-trip saved no measurable wall-clock, and Semgrep's ~1 GB
+image is too large to cache usefully. The images stay digest-pinned, so this is a
+simplicity choice with no effect on what runs.
 
-- **Keyed on the digest, never on "latest".** The cache key is
-  `hashFiles('.github/workflows/security.yml')` — the workflow file that holds the
-  `@sha256:` pins. Bumping a pin changes the hash, so the next run is a cache
-  **miss** that pulls the new digest fresh and repopulates the cache. The cache
-  can therefore never keep you on a stale image: to update a scanner you bump
-  its digest exactly as before, and the cache follows automatically.
-- **Exact key only, no `restore-keys`.** A near-miss prefix is never loaded, so
-  a stale tarball can never masquerade as the pin. A miss always pulls
-  **by digest** (content-verified), then tags and saves it. The local tag exists
-  only because `docker load` does not restore a manifest digest reference, so the
-  scanner is run by that tag; the content is still exactly the pinned image.
-
-**Semgrep is deliberately not cached.** Its image is ~1 GB (~423 MB compressed),
-about the same size as the registry pull it would replace — restoring it from the
-GitHub cache is no faster than pulling it, and it would consume a large share of
-the 10 GB per-repo cache budget. Caching pays off only where the stored tarball
-is much smaller than a fresh pull, which holds for the small/medium scanners
-(Gitleaks ~25 MB, TruffleHog ~46 MB, OSV-Scanner ~105 MB compressed) but not for
-Semgrep. Semgrep is pulled by its pinned digest on every run.
-
-The `container-build` job caches Docker **layers** separately with buildx
+The `container-build` job caches Docker **layers** with buildx
 `cache-from/cache-to: type=gha`, so an unchanged `npm ci` layer is restored
 rather than rebuilt. This is a caching change only — the same Dockerfile and
 context produce identical image content (verified: cached and uncached builds
