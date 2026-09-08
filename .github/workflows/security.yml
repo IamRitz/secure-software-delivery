@@ -85,29 +85,12 @@ jobs:
             echo "Full-history secret scan (event=$EVENT_NAME)"
           fi
 
-      - name: Cache pinned scanner images
-        # Exact-key only (keyed on this file, which holds the digests) — never a
-        # restore-keys prefix, so a stale tarball can never masquerade as the pin.
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/scanner-images
-          key: scanner-images-secret-${{ hashFiles('.github/workflows/security.yml') }}
-
-      - name: Load or pull secret scanners
-        run: |
-          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
-            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            scan-gitleaks:pinned
-          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
-            trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
-            scan-trufflehog:pinned
-
       - name: Run Gitleaks (report only)
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$GITHUB_WORKSPACE/reports:/reports" \
-            scan-gitleaks:pinned \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git /repo --config /repo/.gitleaks.toml ${GITLEAKS_LOG_OPTS} --platform github \
             --no-banner --redact=100 --report-format json \
             --report-path /reports/gitleaks.json --exit-code 0
@@ -116,7 +99,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
-            scan-trufflehog:pinned \
+            trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
             git file:///repo --json --no-update ${TRUFFLEHOG_SINCE} \
             --exclude-paths=/repo/.trufflehog-exclude-paths.txt \
             --results=verified,unverified,unknown --no-fail \
@@ -180,24 +163,12 @@ jobs:
             npm-audit reports/npm-audit.json
           echo "npm audit report is valid; the security gate evaluates findings"
 
-      - name: Cache pinned scanner image
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/scanner-images
-          key: scanner-images-dependency-${{ hashFiles('.github/workflows/security.yml') }}
-
-      - name: Load or pull OSV-Scanner
-        run: |
-          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
-            ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
-            scan-osv:pinned
-
       - name: Run OSV-Scanner (report only)
         continue-on-error: true
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
-            scan-osv:pinned \
+            ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
             scan source --lockfile=/repo/package-lock.json --format=json \
             > reports/osv-scanner.json
 
@@ -265,12 +236,6 @@ jobs:
             echo "Full-tree SAST scan (event=$EVENT_NAME)"
           fi
 
-      # Semgrep is deliberately NOT cached: its image (~1 GB, ~423 MB compressed)
-      # is about the same size as the registry pull it would replace, so restoring
-      # it from the GitHub cache is no faster than pulling it and would consume a
-      # large share of the 10 GB per-repo cache budget. The small/medium scanners
-      # (Gitleaks, TruffleHog, OSV-Scanner) are cached because their tars are far
-      # smaller than a fresh pull. See docs/github-actions.md.
       - name: Run Semgrep OSS (report only)
         run: |
           docker run --rm \
