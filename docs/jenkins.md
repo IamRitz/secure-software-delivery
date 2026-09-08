@@ -8,27 +8,29 @@ container: `node:22.23.2-alpine3.24`.
 
 1. **Checkout** runs the standard `checkout scm` step. Automatic declarative
    checkout is disabled so this boundary remains explicit in the demo.
-2. **Secret scanning** runs Gitleaks and TruffleHog in parallel, in
-   digest-pinned containers, and archives their redacted JSON reports. Phase 5
-   logs findings without failing the build.
-3. **Dependency scanning** runs `npm audit` and OSV-Scanner in parallel against
-   `package-lock.json`, preserves their native JSON, and archives both reports.
-   Phase 6 logs findings without failing the build.
-4. **SAST** runs digest-pinned Semgrep OSS with the named `p/owasp-top-ten` and
-   `p/javascript` rulesets, validates its native JSON, and archives the report.
-5. **Security Gate** calls the shared Node evaluator against all five scanner
+2. **Security scanning** runs all five scanners as a single `parallel` block —
+   Gitleaks, TruffleHog, `npm audit`, and OSV-Scanner (all in digest-pinned
+   containers), plus digest-pinned Semgrep OSS with the named `p/owasp-top-ten`
+   and `p/javascript` rulesets. Each leaf stage validates and archives its
+   native/redacted JSON. This matches the three parallel scanner jobs in GitHub
+   Actions; because Declarative Pipeline does not allow nested `parallel`, the
+   secret and dependency scanners are flattened into sibling leaf stages rather
+   than grouped. None of these stages touch AWS credentials, so the gate and
+   every delivery stage stay serialized after this block. Phases 5/6 log
+   findings without failing the build.
+3. **Security Gate** calls the shared Node evaluator against all five scanner
    reports and the checked-in Semgrep baseline. Its process exit code directly
    fails the pipeline on `BLOCK`; Jenkins does not reimplement policy in
    Groovy. The decision and exception files are archived even on failure.
-6. **Install** runs `npm ci` against the committed lockfile. It never uses
+4. **Install** runs `npm ci` against the committed lockfile. It never uses
    `npm install`.
-7. **Lint** runs `npm run lint`.
-8. **Test** runs the offline test suite with `npm test`.
-9. **Docker Build** builds the Phase 2 Dockerfile without AWS credentials on a
+5. **Lint** runs `npm run lint`.
+6. **Test** runs the offline test suite with `npm test`.
+7. **Docker Build** builds the Phase 2 Dockerfile without AWS credentials on a
    non-scheduled `main` build.
-10. **AWS Configuration** states whether delivery is enabled. The default is
+8. **AWS Configuration** states whether delivery is enabled. The default is
     disabled and emits a visible skip explanation.
-11. **ECR Push**, **Image Scan**, **Deploy Gate**, and **Deploy** run only when
+9. **ECR Push**, **Image Scan**, **Deploy Gate**, and **Deploy** run only when
     `ENABLE_AWS_DELIVERY` is explicitly enabled. The image gate calls the same
     fail-closed Node script used by GitHub Actions, and **Deploy** runs the same
     shared `ssm-deploy.mjs` — an EC2 deploy over AWS Systems Manager

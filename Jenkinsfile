@@ -72,7 +72,14 @@ pipeline {
             }
         }
 
-        stage('Secret scanning') {
+        // Secret, dependency, and SAST scanning run as one parallel block to match
+        // GitHub Actions' three parallel scanner jobs. Declarative Pipeline does not
+        // allow nested parallel, so the two secret and two dependency scanners are
+        // flattened into sibling leaf stages here (previously three sequential
+        // stages). None of these touch AWS credentials; the gate and every
+        // push/deploy stage stay serialized after this block, so the credential
+        // boundary is unchanged.
+        stage('Security scanning') {
             parallel {
                 stage('Gitleaks') {
                     steps {
@@ -108,11 +115,7 @@ pipeline {
                         }
                     }
                 }
-            }
-        }
 
-        stage('Dependency scanning') {
-            parallel {
                 stage('npm audit') {
                     steps {
                         sh 'mkdir -p reports'
@@ -160,35 +163,35 @@ pipeline {
                         }
                     }
                 }
-            }
-        }
 
-        stage('SAST') {
-            steps {
-                sh 'mkdir -p reports'
-                script {
-                    docker.image('semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e').inside("--entrypoint= -e HOME=/tmp -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=${env.WORKSPACE}") {
-                        sh '''
-                            semgrep scan \
-                                --config p/owasp-top-ten \
-                                --config p/javascript \
-                                --config security/semgrep-rules.yml \
-                                ${SEMGREP_BASELINE} \
-                                --json-output=reports/semgrep.json \
-                                --metrics=off \
-                                --disable-version-check \
-                                src
-                        '''
+                stage('SAST') {
+                    steps {
+                        sh 'mkdir -p reports'
+                        script {
+                            docker.image('semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e').inside("--entrypoint= -e HOME=/tmp -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=${env.WORKSPACE}") {
+                                sh '''
+                                    semgrep scan \
+                                        --config p/owasp-top-ten \
+                                        --config p/javascript \
+                                        --config security/semgrep-rules.yml \
+                                        ${SEMGREP_BASELINE} \
+                                        --json-output=reports/semgrep.json \
+                                        --metrics=off \
+                                        --disable-version-check \
+                                        src
+                                '''
+                            }
+                            docker.image('node:22.23.2-alpine3.24').inside {
+                                sh 'node security/scripts/validate-semgrep-report.mjs reports/semgrep.json'
+                            }
+                            echo 'Semgrep report is ready for the security gate'
+                        }
                     }
-                    docker.image('node:22.23.2-alpine3.24').inside {
-                        sh 'node security/scripts/validate-semgrep-report.mjs reports/semgrep.json'
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/semgrep.json', allowEmptyArchive: false
+                        }
                     }
-                    echo 'Semgrep report is ready for the security gate'
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'reports/semgrep.json', allowEmptyArchive: false
                 }
             }
         }

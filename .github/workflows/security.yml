@@ -85,12 +85,29 @@ jobs:
             echo "Full-history secret scan (event=$EVENT_NAME)"
           fi
 
+      - name: Cache pinned scanner images
+        # Exact-key only (keyed on this file, which holds the digests) — never a
+        # restore-keys prefix, so a stale tarball can never masquerade as the pin.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/scanner-images
+          key: scanner-images-secret-${{ hashFiles('.github/workflows/security.yml') }}
+
+      - name: Load or pull secret scanners
+        run: |
+          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            scan-gitleaks:pinned
+          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
+            trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
+            scan-trufflehog:pinned
+
       - name: Run Gitleaks (report only)
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             -v "$GITHUB_WORKSPACE/reports:/reports" \
-            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            scan-gitleaks:pinned \
             git /repo --config /repo/.gitleaks.toml ${GITLEAKS_LOG_OPTS} --platform github \
             --no-banner --redact=100 --report-format json \
             --report-path /reports/gitleaks.json --exit-code 0
@@ -99,7 +116,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
-            trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08 \
+            scan-trufflehog:pinned \
             git file:///repo --json --no-update ${TRUFFLEHOG_SINCE} \
             --exclude-paths=/repo/.trufflehog-exclude-paths.txt \
             --results=verified,unverified,unknown --no-fail \
@@ -163,12 +180,24 @@ jobs:
             npm-audit reports/npm-audit.json
           echo "npm audit report is valid; the security gate evaluates findings"
 
+      - name: Cache pinned scanner image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/scanner-images
+          key: scanner-images-dependency-${{ hashFiles('.github/workflows/security.yml') }}
+
+      - name: Load or pull OSV-Scanner
+        run: |
+          security/scripts/cache-scanner-image.sh /tmp/scanner-images \
+            ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
+            scan-osv:pinned
+
       - name: Run OSV-Scanner (report only)
         continue-on-error: true
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
-            ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
+            scan-osv:pinned \
             scan source --lockfile=/repo/package-lock.json --format=json \
             > reports/osv-scanner.json
 
@@ -236,6 +265,12 @@ jobs:
             echo "Full-tree SAST scan (event=$EVENT_NAME)"
           fi
 
+      # Semgrep is deliberately NOT cached: its image (~1 GB, ~423 MB compressed)
+      # is about the same size as the registry pull it would replace, so restoring
+      # it from the GitHub cache is no faster than pulling it and would consume a
+      # large share of the 10 GB per-repo cache budget. The small/medium scanners
+      # (Gitleaks, TruffleHog, OSV-Scanner) are cached because their tars are far
+      # smaller than a fresh pull. See docs/github-actions.md.
       - name: Run Semgrep OSS (report only)
         run: |
           docker run --rm \
@@ -381,10 +416,13 @@ jobs:
 
   container-build:
     name: Container build
-    needs:
-      - security-gate
+    # No dependency on security-gate: this job holds zero AWS/ECR credentials and
+    # only produces a local image artifact, so it builds in parallel with the
+    # scanners and the gate instead of waiting for them. The credential boundary
+    # is enforced downstream — aws-configuration and aws-delivery each require a
+    # passing security-gate — so on a BLOCK the image is built but never pushed
+    # or deployed (a wasted build, never an unsafe one).
     if: >-
-      needs.security-gate.result == 'success' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -395,8 +433,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
       - name: Build application image without AWS credentials
-        run: docker build --tag "secure-software-delivery:$GITHUB_SHA" .
+        # type=gha reuses unchanged layers (e.g. the npm ci layer when
+        # package-lock.json is unchanged) across runs. This is a caching change
+        # only — same Dockerfile, same context, so the image content is identical
+        # to an uncached build; unchanged layers are restored rather than rebuilt.
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: secure-software-delivery:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Export application image
         run: docker save "secure-software-delivery:$GITHUB_SHA" | gzip > application-image.tar.gz
@@ -411,8 +462,14 @@ jobs:
 
   aws-configuration:
     name: AWS configuration
+    # Requires a passing security-gate (not just container-build): now that the
+    # build runs in parallel with the gate, this is where the credential boundary
+    # is enforced. A skipped/failed container-build (e.g. PRs, where it does not
+    # run) also skips this job, so AWS work only happens on a gated main build.
     needs:
+      - security-gate
       - container-build
+    if: needs.security-gate.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.detect.outputs.configured }}
@@ -442,10 +499,16 @@ jobs:
 
   aws-delivery:
     name: AWS delivery
+    # The push/deploy job. Explicitly gated on a passing security-gate as well as
+    # the parallel build and AWS configuration — a BLOCK leaves security-gate not
+    # 'success', so this job is skipped and nothing is ever pushed or deployed.
     needs:
+      - security-gate
       - container-build
       - aws-configuration
-    if: needs.aws-configuration.outputs.configured == 'true'
+    if: >-
+      needs.security-gate.result == 'success' &&
+      needs.aws-configuration.outputs.configured == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
