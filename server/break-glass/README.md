@@ -16,7 +16,8 @@ mirrored (`security/scripts/slack-interaction-verify.mjs`, `slack-authorize.mjs`
   createdAt, expiresAt }`.
 - `POST /slack/interactions` — Slack interactivity callback. Verifies the HMAC
   signature against the **raw** request body (no body parser runs before it),
-  authorizes the clicker against `SLACK_APPROVER_IDS`, runs the shared
+  authorizes the clicker against `SLACK_APPROVER_IDS_BY_REPO` for the request's
+  stored repo (per-repo, fail-closed), runs the shared
   claim/finalize logic, then `chat.update`s the message and posts the GitHub PR
   audit comment. Acks within Slack's 3-second window, then does side effects.
 - `GET /break-glass/status` — shared-secret header auth; returns the request's

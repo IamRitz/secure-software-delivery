@@ -17,7 +17,7 @@ function baseConfig(overrides = {}) {
     botToken: 'xoxb-test',
     githubToken: 'ghp-test',
     slackChannelId: 'C-DEMO',
-    approverIds: new Set(['U-APPROVER']),
+    approverMap: new Map([['owner/repo', new Set(['U-APPROVER'])]]),
     defaultTimeoutSeconds: 900,
     minTimeoutSeconds: 60,
     maxTimeoutSeconds: 3600,

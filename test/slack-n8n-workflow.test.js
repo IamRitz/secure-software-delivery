@@ -104,10 +104,10 @@ describe('n8n Slack break-glass workflow definition', () => {
   it('leaves pending state unchanged for an unauthorized Slack click in the actual Claim node', async () => {
     const code = node('Authorize and Claim Decision').parameters.jsCode;
     const execute = new AsyncFunction('$json', '$env', '$getWorkflowStaticData', code);
-    const state = { requests: { [REQUEST_ID]: { status: 'pending', expiresAt: '2099-01-01T00:00:00.000Z', findings: [], gateDigest: 'd' } } };
+    const state = { requests: { [REQUEST_ID]: { status: 'pending', expiresAt: '2099-01-01T00:00:00.000Z', findings: [], gateDigest: 'd', context: { repository: 'o/r', pullRequest: '12' } } } };
     const result = await execute(
       { interaction: { type: 'block_actions', user: { id: 'U-INTRUDER', username: 'intruder' }, actions: [{ action_id: `breakglass:${REQUEST_ID}:approve` }] } },
-      { SLACK_APPROVER_IDS: 'U-ALLOWED' },
+      { SLACK_APPROVER_IDS_BY_REPO: '{"o/r":["U-ALLOWED"]}' },
       () => state
     );
     assert.equal(result[0].json.outcome, 'unauthorized');
@@ -121,7 +121,7 @@ describe('n8n Slack break-glass workflow definition', () => {
     const state = { requests: { [REQUEST_ID]: { requestId: REQUEST_ID, status: 'pending', expiresAt: '2099-01-01T00:00:00.000Z', gateDigest: 'abc123', findings: [{ policyRule: 'sast.high_new', id: 'demo.rule' }], context: { repository: 'o/r', pullRequest: '12' } } } };
     const result = await execute(
       { interaction: { type: 'block_actions', user: { id: 'U-ALLOWED', username: 'approver' }, actions: [{ action_id: `breakglass:${REQUEST_ID}:approve` }], response_url: 'https://hooks.slack.test/x' } },
-      { SLACK_APPROVER_IDS: 'U-ALLOWED' },
+      { SLACK_APPROVER_IDS_BY_REPO: '{"o/r":["U-ALLOWED"]}' },
       () => state
     );
     assert.equal(result[0].json.outcome, 'claimed');

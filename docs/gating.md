@@ -140,6 +140,34 @@ claim a decision. The GitHub PAT is stored only as an n8n credential and posts
 the decision, verified Discord identity, timestamp, findings, and gate digest
 to the affected PR.
 
+### Slack approvers — per-repo allowlist
+
+This resolves the earlier "shared vs per-repo" question: approvers are **per-repo,
+explicit, and fail-closed**. The Slack interaction handler reads
+`SLACK_APPROVER_IDS_BY_REPO`, a JSON object keyed by full repository name:
+
+```
+SLACK_APPROVER_IDS_BY_REPO={"IamRitz/secure-software-delivery":["U0BV6TWN60J"],"org/other-repo":["U111","U222"]}
+```
+
+Rules, all deliberate:
+
+- A repository **not present as a key** authorizes **nobody** — there is no fallback
+  to a shared default list. A repo is not onboarded to break-glass until it has an
+  explicit entry.
+- **Malformed JSON** in the variable is treated as an empty map (nobody authorized
+  for anything), logged, never thrown — one bad edit cannot crash the handler for
+  every repo at once.
+- The repository identity is taken from the **stored pending request** (set when the
+  notify webhook first received the finding payload, the same value used to post the
+  GitHub audit comment), looked up by request ID when the click arrives — **never
+  from the Slack interaction payload**, which has no notion of a GitHub repo and thus
+  nothing to forge. The user ID is checked against that repo's set only.
+
+**Onboarding a repo:** add its full name and its approvers' Slack member IDs to
+`SLACK_APPROVER_IDS_BY_REPO`, then recreate the `n8n` container (env-var config
+requires a process restart on any platform to take effect).
+
 ### Phase 8 enforced configuration
 
 The repository was changed from private to public so GitHub Free could enforce

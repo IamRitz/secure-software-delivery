@@ -1,4 +1,4 @@
-import { parseApproverIds } from '../../security/scripts/slack-authorize.mjs';
+import { parseApproverMapFromEnv } from '../../security/scripts/slack-authorize.mjs';
 
 // Break-glass is only offered for these BLOCK categories — the same allowlist the
 // n8n notify node enforced. Never secrets, never malicious packages, never a
@@ -28,9 +28,9 @@ export function loadConfig(env = process.env) {
     botToken: required(env, 'SLACK_BOT_TOKEN'),
     githubToken: required(env, 'GITHUB_TOKEN'),
     slackChannelId: required(env, 'SLACK_CHANNEL_ID'),
-    // Flat allowlist, ported exactly as it works today. Per-repo mapping is a
-    // separate follow-up and deliberately not implemented here.
-    approverIds: parseApproverIds(env.SLACK_APPROVER_IDS),
+    // Per-repo approver allowlist: {"owner/repo":["Uxxx",...]}. A repo with no
+    // entry authorizes nobody (fail closed). Malformed JSON -> empty map.
+    approverMap: parseApproverMapFromEnv(env.SLACK_APPROVER_IDS_BY_REPO),
     defaultTimeoutSeconds: 900,
     minTimeoutSeconds: 60,
     maxTimeoutSeconds: 3600
