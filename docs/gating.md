@@ -78,18 +78,29 @@ follows using a repository administrator account:
 2. Add or edit the branch protection rule whose branch name pattern is
    `main`.
 3. Enable **Require status checks to pass before merging**.
-4. Search for and select the exact `security-gate` status check.
+4. Search for and select two checks: `security-gate` (the security boundary)
+   and `Application checks` (lint + tests). Requiring both means a PR cannot
+   merge unless it is both secure *and* passing tests.
 5. Save the branch protection rule.
 
-Confirm the saved setting in the UI by reopening the rule and verifying
-`security-gate` remains selected. API-capable administrators can independently
-check the configured context with:
+Both checks are safe to require because each fires on **every** pull request to
+`main`: `Application checks` (`ci.yml`) has no `paths` filter or conditional
+job, and `security-gate` runs via `if: always()`. A required check whose
+workflow can be *skipped* for some PRs (for example a `paths`-filtered workflow
+on a PR that touches no matching files) would leave those PRs permanently
+blocked on "Waiting for status to be reported" — neither of these can, because
+both always report.
+
+Confirm the saved setting in the UI by reopening the rule and verifying both
+checks remain selected. API-capable administrators can independently check the
+configured context with:
 
 ```sh
 gh api repos/IamRitz/secure-software-delivery/branches/main/protection/required_status_checks
 ```
 
-The response's `contexts` or `checks` list must contain `security-gate`.
+The response's `contexts` or `checks` list must contain `security-gate` and
+`Application checks`.
 
 ## Break-glass exceptions
 
