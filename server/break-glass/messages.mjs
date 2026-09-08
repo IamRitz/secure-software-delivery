@@ -1,23 +1,71 @@
 // Slack Block Kit builders — the same message shape the n8n workflow produced,
 // so the channel experience is unchanged after the migration.
 
+// Internal policy category -> plain-language summary shown first.
+const SUMMARY_LABELS = {
+  'sast.critical_new': 'New critical code security issue',
+  'sast.high_new': 'New high-severity code security issue',
+  'dependencies.critical_with_fix': 'Critical vulnerable dependency (fix available)',
+  'dependencies.high_with_fix': 'High-severity vulnerable dependency (fix available)'
+};
+
+const friendlySummary = (policyRule) => SUMMARY_LABELS[policyRule] || policyRule;
+
+// Slack mrkdwn link.
+const mdLink = (url, label) => `<${url}|${label}>`;
+
+// A "View finding" blob link for SAST findings only, and only when the gate
+// actually captured `location` ("path:line"). If it's absent we describe the
+// finding in text — never a link that might 404.
+function findingLink(finding, repo, sha) {
+  if (finding.source !== 'semgrep' || typeof finding.location !== 'string') return '';
+  const idx = finding.location.lastIndexOf(':');
+  if (idx < 1) return '';
+  const path = finding.location.slice(0, idx);
+  const line = finding.location.slice(idx + 1);
+  if (!path || !/^\d+$/.test(line)) return '';
+  return `  ${mdLink(`https://github.com/${repo}/blob/${sha}/${path}#L${line}`, 'View finding')}`;
+}
+
 export function buildApprovalMessage(request, channel) {
-  const lines = request.findings.map(
-    (finding) => `- ${finding.policyRule}: ${finding.id} - ${finding.reason}`
-  );
+  const repo = request.context.repository;
+  const pr = request.context.pullRequest;
+  const sha = String(request.context.commitSha);
+
+  // Render the expiry in each viewer's local timezone via Slack's date token,
+  // with the ISO string as fallback for clients that can't format it.
+  const expiresTs = Math.floor(new Date(request.expiresAt).getTime() / 1000);
+  const expires = Number.isFinite(expiresTs)
+    ? `<!date^${expiresTs}^{date_short_pretty} {time}|${request.expiresAt}>`
+    : request.expiresAt;
+
+  // Plain-language summary (deduped categories), then the exact technical lines.
+  const summary = [...new Set(request.findings.map((f) => friendlySummary(f.policyRule)))]
+    .map((s) => `*${s}*`)
+    .join('\n');
+  const detail = request.findings
+    .map((f) => `${f.policyRule}: ${f.id} — ${f.reason}${findingLink(f, repo, sha)}`)
+    .join('\n')
+    .slice(0, 2900);
+
   return {
     channel,
     text: 'Break-glass security exception requested',
+    // Keep the message compact — don't let Slack expand the GitHub links into
+    // large preview cards below it.
+    unfurl_links: false,
+    unfurl_media: false,
     blocks: [
       { type: 'header', text: { type: 'plain_text', text: 'Break-glass security exception requested' } },
-      { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n').slice(0, 2900) } },
+      { type: 'section', text: { type: 'mrkdwn', text: summary } },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: detail }] },
       {
         type: 'section',
         fields: [
-          { type: 'mrkdwn', text: `*Repository*\n${request.context.repository}` },
-          { type: 'mrkdwn', text: `*Pull request*\n#${request.context.pullRequest}` },
-          { type: 'mrkdwn', text: `*Commit*\n${String(request.context.commitSha).slice(0, 12)}` },
-          { type: 'mrkdwn', text: `*Expires*\n${request.expiresAt}` }
+          { type: 'mrkdwn', text: `*Repository*\n${repo}` },
+          { type: 'mrkdwn', text: `*Pull request*\n${mdLink(`https://github.com/${repo}/pull/${pr}`, `#${pr}`)}` },
+          { type: 'mrkdwn', text: `*Commit*\n${mdLink(`https://github.com/${repo}/commit/${sha}`, sha.slice(0, 12))}` },
+          { type: 'mrkdwn', text: `*Expires*\n${expires}` }
         ]
       },
       {
