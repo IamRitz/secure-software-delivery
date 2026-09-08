@@ -16,16 +16,60 @@ its exit code directly determines the required check result. Redacted secret
 reports, native dependency reports, Semgrep JSON, and gate decisions are
 retained as workflow artifacts for 14 days.
 
+## Scanner image caching
+
+Ephemeral runners start with an empty Docker store, so each scanner job would
+otherwise pull its pinned container image over the network on every run. The
+secret and dependency jobs instead restore their images (Gitleaks, TruffleHog,
+OSV-Scanner) from an `actions/cache`, via `security/scripts/cache-scanner-image.sh`:
+
+- **Keyed on the digest, never on "latest".** The cache key is
+  `hashFiles('.github/workflows/security.yml')` — the workflow file that holds the
+  `@sha256:` pins. Bumping a pin changes the hash, so the next run is a cache
+  **miss** that pulls the new digest fresh and repopulates the cache. The cache
+  can therefore never keep you on a stale image: to update a scanner you bump
+  its digest exactly as before, and the cache follows automatically.
+- **Exact key only, no `restore-keys`.** A near-miss prefix is never loaded, so
+  a stale tarball can never masquerade as the pin. A miss always pulls
+  **by digest** (content-verified), then tags and saves it. The local tag exists
+  only because `docker load` does not restore a manifest digest reference, so the
+  scanner is run by that tag; the content is still exactly the pinned image.
+
+**Semgrep is deliberately not cached.** Its image is ~1 GB (~423 MB compressed),
+about the same size as the registry pull it would replace — restoring it from the
+GitHub cache is no faster than pulling it, and it would consume a large share of
+the 10 GB per-repo cache budget. Caching pays off only where the stored tarball
+is much smaller than a fresh pull, which holds for the small/medium scanners
+(Gitleaks ~25 MB, TruffleHog ~46 MB, OSV-Scanner ~105 MB compressed) but not for
+Semgrep. Semgrep is pulled by its pinned digest on every run.
+
+The `container-build` job caches Docker **layers** separately with buildx
+`cache-from/cache-to: type=gha`, so an unchanged `npm ci` layer is restored
+rather than rebuilt. This is a caching change only — the same Dockerfile and
+context produce identical image content (verified: cached and uncached builds
+yield the same rootfs layer digests). The one layer to keep in mind is
+`RUN apk --no-cache upgrade`: while its cache is warm it will not re-pull newly
+published Alpine patches, but the shipped image is still scanned by the
+ECR scan-on-push deploy gate (`image-gate`) regardless of build cache, and the
+weekly scheduled run rebuilds — so a stale patch layer cannot slip a new CVE
+past delivery.
+
 Only the security workflow has a Monday weekly schedule. This catches
 advisories published for already-locked dependencies and refreshes the SAST
 report without pointlessly scheduling the standalone application workflow.
 
 For pull requests, the security workflow ends at `security-gate`: no image is
-built and no AWS job is eligible. For a push or manual dispatch on `main`, a
-passing gate starts `container-build`. That job has only `contents: read`,
-builds the Dockerfile without AWS credentials, and uploads the image as a
-one-day artifact. `aws-configuration` then checks the required repository
-variables. If any are absent, it emits an explicit notice and `aws-delivery`
+built and no AWS job is eligible. For a push or manual dispatch on `main`,
+`container-build` runs **in parallel** with the scanners and the gate rather
+than after them. It has only `contents: read`, holds no AWS credentials, builds
+the Dockerfile (with a `type=gha` layer cache so an unchanged `npm ci` layer is
+restored instead of rebuilt), and uploads the image as a one-day artifact.
+Because it holds no credentials it does not wait for the gate; the credential
+boundary is enforced on the jobs that follow. `aws-configuration` and
+`aws-delivery` both require `needs.security-gate.result == 'success'`, so on a
+BLOCK the parallel image is built but never pushed or deployed — a wasted
+build, never an unsafe one. `aws-configuration` checks the required repository
+variables; if any are absent, it emits an explicit notice and `aws-delivery`
 shows as skipped.
 
 `aws-delivery` is the only job with `id-token: write`. It downloads the
