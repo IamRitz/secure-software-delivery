@@ -1,0 +1,57 @@
+# Dependabot keeps dependencies and pinned action SHAs current, on a weekly
+# cadence with a 7-day cooldown.
+#
+# Two different mechanisms enforce the same 7-day principle, and they are
+# complementary, not redundant:
+#   * Dependabot `cooldown` (below) delays *PR creation* until a release is at
+#     least 7 days old, so a too-fresh version is never proposed into the
+#     lockfile in the first place.
+#   * npm `min-release-age=7` (.npmrc) blocks *installation* of any version
+#     younger than 7 days, so even a version that reached the lockfile some
+#     other way is refused at build time.
+# The cooldown is preventive (upstream, at proposal time); min-release-age is
+# fail-closed (downstream, at install time). See docs/security-controls.md.
+#
+# Minor and patch updates are grouped to cut PR noise; major-version updates are
+# deliberately left ungrouped (Dependabot's default) so each one gets individual
+# review, since majors often carry breaking changes.
+version: 2
+
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      production-minor-patch:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      development-minor-patch:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # This repo pins third-party GitHub Actions to full commit SHAs (see the
+  # `uses: ...@<sha> # vX.Y.Z` lines in .github/workflows/). A pinned SHA never
+  # updates on its own, so without this entry those pins would silently go stale
+  # and miss upstream security fixes. Dependabot advances the SHA (and the
+  # version comment) as new releases ship — that is the specific reason this
+  # ecosystem is here, not boilerplate.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

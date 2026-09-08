@@ -244,11 +244,19 @@ pipeline {
             agent {
                 docker {
                     image 'node:22.23.2-alpine3.24'
+                    // Run as root so the pinned npm can be installed globally; the
+                    // resulting node_modules stays world-readable for the Lint/Test
+                    // stages, which only read it.
+                    args '-u root:root'
                     reuseNode true
                 }
             }
             steps {
-                sh 'npm ci'
+                // Pin npm to a min-release-age-capable version (base image ships
+                // npm 10.x, which ignores the setting). The upgrade runs under
+                // npm 10 (ignoring .npmrc), then npm ci runs under npm 12 and
+                // enforces the 7-day install floor from .npmrc.
+                sh 'npm install -g npm@12.0.2 && npm ci'
             }
         }
 
