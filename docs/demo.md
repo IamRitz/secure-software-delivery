@@ -138,11 +138,18 @@ make demo-dependency-no-fix
 Expected: `dependencies.critical_no_fix`, then
 `SECURITY GATE: PASS-WITH-EXCEPTIONS`, with a separate exceptions JSON report.
 
-## Demo 5 — image deploy gate
+## Demo 5 — image deploy gate (run for real)
 
-The image-gate logic has synthetic unit-test coverage, but a live ECR image scan
-remains documentation-only until the AWS infrastructure in `docs/aws-setup.md`
-exists. Do not present it as a completed AWS deployment.
+This has been exercised against real AWS on GitHub Actions, not just unit-tested.
+On a `main` run the credential-free image is pushed to ECR via OIDC, scanned on
+push, and evaluated by `image-gate.mjs`. The real scan of the
+`node:22.23.2-alpine3.24` base returned **2 Critical + 7 High** OpenSSL CVEs
+(`libcrypto3`/`libssl3` `3.5.7-r0`); the deploy gate **blocked** and the EC2/SSM
+deploy was skipped. Patching the base image (`apk --no-cache upgrade` → OpenSSL
+`3.5.8-r0`) produced a clean scan, the gate opened, and the container deployed to
+EC2 over SSM with `/health` responding. See `docs/security-controls.md` and
+`docs/aws-setup.md`. (The Jenkins equivalent is converted but its SSM deploy
+stage is structured-but-unverified — see `docs/jenkins.md`.)
 
 ## Demo 6 — Jenkins equivalent
 

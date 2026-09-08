@@ -30,8 +30,9 @@ shows as skipped.
 
 `aws-delivery` is the only job with `id-token: write`. It downloads the
 already-built image before obtaining a short-lived AWS identity through OIDC,
-then performs ECR push, image scan, the fail-closed deploy gate, and ECS
-deployment. This artifact handoff is intentional: Docker's `npm ci` build
+then performs ECR push, image scan, the fail-closed deploy gate, and the EC2
+deploy over AWS Systems Manager (`ssm-deploy.mjs` — no SSH, no inbound port).
+This artifact handoff is intentional: Docker's `npm ci` build
 layer never runs while AWS credentials are present. No workflow-level AWS
 permission or static AWS access key is used. See `docs/aws-setup.md`.
 
@@ -48,8 +49,11 @@ setting and its manual verification procedure are documented in
 `docs/gating.md`.
 
 When the gate emits an eligible BLOCK, the job checks eligibility before
-loading `BREAK_GLASS_SHARED_SECRET`, sends the normalized findings to n8n, and
-polls for a verified Discord decision. Approval preserves the same
+loading `BREAK_GLASS_SHARED_SECRET`, sends the normalized findings to the break-
+glass service, and polls for a verified decision. Slack is the active approval
+platform (the Discord path is built but frozen); the CI side is
+platform-agnostic — it only calls the `BREAK_GLASS_NOTIFY_URL`/`STATUS_URL`
+endpoints. Approval preserves the same
 `security-gate` check name and lets that job succeed; denial, timeout, endpoint
 failure, or malformed status fails it. Verified-secret and malicious-package
 hard blocks fail during the credential-free eligibility step and never invoke

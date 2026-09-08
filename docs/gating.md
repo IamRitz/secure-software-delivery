@@ -97,7 +97,15 @@ The gate offers a narrow, audited exception path only when **every** blocking
 finding is either a new high/critical Semgrep finding or a fixable
 high/critical dependency finding. The gate report includes `breakGlass` with
 the eligible and ineligible BLOCK findings. A mixed set containing any hard
-block is not eligible.
+block is not eligible. Dependency findings with **no fix available** are never
+break-glass candidates because the gate already treats them as EXCEPTION rather
+than BLOCK — there is nothing to override.
+
+**Active platform: Slack.** The approval flow below was first built on Discord;
+that Discord path remains in the repository, built and tested, but is
+intentionally **frozen/dormant** — Slack is what is actually in use. The
+Discord-specific details in the next subsection describe that frozen path; the
+live per-repo Slack mechanism is in "Slack approvers" further down.
 
 Verified secrets, malicious-package (`MAL-`) advisories, report-integrity
 failures, and the safe dummy-secret demo marker have no override path. The CI
@@ -108,7 +116,7 @@ For an eligible BLOCK, CI authenticates to n8n Webhook A, then polls Webhook C.
 Only an `approved` decision makes the existing `security-gate` job successful.
 Denied, expired, malformed, unreachable, or timed-out decisions remain failed.
 
-### Discord and n8n setup
+### Discord path (built, frozen) and n8n setup
 
 1. In the Discord Developer Portal, create the application and bot, invite it
    with permission to send/edit messages in the approval channel, and record

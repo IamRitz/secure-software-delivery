@@ -5,7 +5,9 @@
 Gitleaks and TruffleHog overlap deliberately but answer different questions.
 
 **Gitleaks** is the fast pattern-based scanner. It gives immediate feedback on
-strings that look like credentials and scans full Git history in CI. For local
+strings that look like credentials and scans Git history — the **full** history
+on the weekly schedule, and the **incremental commit range** on pull-request and
+push runs (`--log-opts=<base>..HEAD`; see `docs/github-actions.md`). For local
 feedback, developers with Gitleaks installed can add a pre-commit hook that
 runs `gitleaks git --pre-commit --staged --redact=100`; local hooks complement
 CI but are not a trusted enforcement boundary.
@@ -168,3 +170,15 @@ policy: Critical/High block deployment, Medium/Low log. Missing, malformed,
 incomplete, or structurally inconsistent results also block deployment. The
 decision is written to `reports/image-gate.json` and its process exit code is
 used directly by both CI systems.
+
+**This is not theater — it caught real vulnerabilities.** During the live AWS
+delivery run, the scan-on-push of the `node:22.23.2-alpine3.24`-based image
+returned **2 Critical + 7 High** findings, all real CVEs in the base image's
+OpenSSL (`libcrypto3`/`libssl3` `3.5.7-r0`) — e.g. `CVE-2026-75803` and
+`CVE-2026-63073`. The deploy gate **blocked** on them (`image-gate` verdict
+`BLOCK_DEPLOY`, deploy stage skipped). Patching the base image
+(`apk --no-cache upgrade` → OpenSSL `3.5.8-r0`, the version the advisories name
+as the fix) produced a clean scan, the gate opened, and the EC2/SSM deploy ran.
+None of these findings are visible to secret, dependency, or SAST scanning —
+they live only in the built image, which is exactly why image scanning is a
+distinct, post-push stage.

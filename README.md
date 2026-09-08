@@ -93,10 +93,54 @@ Safe, inert fixtures for live BLOCK-then-PASS demonstrations live under
 activation, cleanup, and synthetic-input commands in
 [`docs/demo.md`](docs/demo.md). Activated demo branches must never be merged.
 
-AWS-dependent ECR push, image scan, and ECS deployment are implemented but
-have not been run against real infrastructure. See
-[`docs/aws-setup.md`](docs/aws-setup.md) before enabling them.
+## Security stages and what each catches
 
-Eligible new SAST and fixable dependency blocks can enter the audited Discord
-break-glass flow described in [`docs/gating.md`](docs/gating.md). Verified
-secrets and known-malicious packages remain permanent hard blocks.
+| Stage | Tools | Catches | Runs |
+| --- | --- | --- | --- |
+| Secret scanning | Gitleaks, TruffleHog | credentials in git history (pattern + live verification) | pre-build |
+| Dependency scanning | npm audit, OSV-Scanner | known-vulnerable and known-**malicious** (`MAL-`) packages | pre-build |
+| SAST | Semgrep OSS (named rulesets) | dangerous patterns in the app's own source | pre-build |
+| Image scanning | ECR basic scan-on-push | vulnerable OS packages in the built image | post-push |
+
+Secret and SAST scans are **incremental** on `pull_request`/`push` (commit range
+only) and full on the weekly schedule — see
+[`docs/github-actions.md`](docs/github-actions.md).
+
+## The gate — three states, fail-closed
+
+The shared evaluator (`security/scripts/security-gate.mjs`) returns **PASS**,
+**BLOCK**, or **EXCEPTION** (`PASS-WITH-EXCEPTIONS`). EXCEPTION exists for the
+real middle case — a critical/high dependency finding with **no fix available**
+is recorded visibly and allowed, rather than blocking indefinitely on an
+upstream patch you don't control. A missing report, malformed JSON, or a
+report-integrity failure all **block** — the safe outcome is always the default.
+
+## Break-glass — a scoped human override
+
+An eligible BLOCK can enter an authenticated approval flow. **Slack is the
+active platform**; the Discord implementation is built and tested but
+intentionally **frozen/dormant** (not deleted, not in active use). Only two
+finding classes are eligible — **new SAST** and **fixable dependency** blocks.
+**Verified secrets and known-malicious packages can never be overridden**, and
+dependency-no-fix findings aren't eligible because they're already handled as
+EXCEPTION (there's nothing to override). Approvers are **per-repo**
+(`SLACK_APPROVER_IDS_BY_REPO`, fail-closed — a repo with no entry authorizes
+nobody). Details in [`docs/gating.md`](docs/gating.md).
+
+## Delivery (AWS)
+
+On a `main` push with a passing gate, the credential-free image is pushed to
+ECR (via GitHub OIDC — no stored keys), scanned on push, evaluated by the deploy
+gate, and, if clean, deployed to an **EC2 Docker host over AWS Systems Manager**
+(`aws ssm send-command` — no SSH, no inbound port 22). This has been run against
+real AWS on GitHub Actions, and the ECR scan genuinely caught real Critical/High
+OpenSSL CVEs in the base image, which the deploy gate blocked until a base-image
+patch fixed them — see [`docs/aws-setup.md`](docs/aws-setup.md). The Jenkins
+pipeline performs the same conversion but its SSM deploy stage is
+structured-but-unverified (see [`docs/jenkins.md`](docs/jenkins.md)).
+
+## Adopting this in another repo
+
+See [`docs/onboarding.md`](docs/onboarding.md): reusable workflow / shared
+library rather than copy-paste, generating a Semgrep baseline first, and the
+LOG-before-BLOCK rollout.

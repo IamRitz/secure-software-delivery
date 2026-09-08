@@ -1,13 +1,13 @@
 # AWS setup for the Phase 9 delivery path
 
-> **Status: delivery targets an EC2 Docker host over SSH (ECR push + scan-on-push
-> + `docker pull`/`docker run` on the instance). Wired and pending a first real
-> `main` run; do not interpret a skipped job as a deployment success.**
->
-> The delivery OIDC role now needs only **ECR push** permissions — the
-> `ecs:UpdateService` grant in the example policy below is no longer required;
-> the image is pulled by the EC2 instance's own read-only ECR role. (The example
-> IAM JSON below still shows the older ECS shape and is being kept for reference.)
+> **Status: delivery targets an EC2 Docker host over AWS Systems Manager** (ECR
+> push + scan-on-push + `aws ssm send-command` running `docker pull`/`docker run`
+> on the instance — no SSH, no inbound port 22). This has **run against real AWS
+> on GitHub Actions**, verified end-to-end with the app responding on `/health`;
+> the ECR scan caught real base-image OpenSSL CVEs that the deploy gate blocked
+> until a base-image patch fixed them. The Jenkins equivalent is converted and
+> confirmed correct on a real controller run but its SSM deploy stage is
+> structured-but-unverified (see `docs/jenkins.md`).
 
 The workflow remains safe and useful without AWS. It builds the container on a
 `main` push, prints which configuration is missing, and marks `aws-delivery`
@@ -48,8 +48,8 @@ the `sub` value; older repositories that have not opted into immutable
 subjects use `repo:IamRitz/secure-software-delivery:ref:refs/heads/main`.
 Never broaden this to all repositories or pull-request subjects.
 
-3. Attach a policy limited to this ECR repository and ECS service. The actions
-   required by the current workflow are:
+3. Attach a policy limited to this ECR repository and this EC2 instance. The
+   actions required by the current workflow are:
 
 ```json
 {
@@ -74,12 +74,27 @@ Never broaden this to all repositories or pull-request subjects.
     },
     {
       "Effect": "Allow",
-      "Action": "ecs:UpdateService",
-      "Resource": "arn:aws:ecs:<REGION>:<ACCOUNT_ID>:service/<CLUSTER>/<SERVICE>"
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>",
+        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
     }
   ]
 }
 ```
+
+`ssm:SendCommand` needs **both** the instance ARN and the `AWS-RunShellScript`
+document ARN. `ssm:GetCommandInvocation` cannot be scoped to the instance and
+must be granted on `*` — a hard-won detail: scoping it to the instance ARN
+silently denies the read-back and the deploy hangs then fails. The EC2
+instance's **own** role separately carries `AmazonSSMManagedInstanceCore` plus
+read-only ECR pull; the runner's push role is never shared with the box.
 
 4. Add these GitHub **repository variables**, not static AWS secrets:
 
@@ -105,10 +120,11 @@ the delivery/OIDC role needs `ssm:SendCommand` + `ssm:GetCommandInvocation` scop
 to the instance. The Jenkins pipeline uses the same `ssm-deploy.mjs` script with an
 `EC2_INSTANCE_ID` parameter and the `jenkins-aws-deploy` credential.
 
-> **Port 22 is not used by CI.** SSM needs no inbound SSH. Close port 22 in the
-> security group, or restrict it to specific known IPs only for occasional manual
-> human debugging — separate from CI, which no longer touches it. Once the SSM
-> path is verified, the old `EC2_SSH_PRIVATE_KEY` secret can be deleted.
+> **Port 22 is not used by CI.** SSM needs no inbound SSH. The SSM path is
+> verified, so the old `EC2_SSH_PRIVATE_KEY` secret has been deleted and port 22
+> closed in the security group. Reopen it only, restricted to specific known IPs,
+> for occasional manual human debugging — separate from CI, which no longer
+> touches it.
 
 Only `aws-delivery` declares `id-token: write`; workflow and pre-build jobs
 remain `contents: read`. The workflow pins `configure-aws-credentials` and
@@ -116,7 +132,7 @@ remain `contents: read`. The workflow pins `configure-aws-credentials` and
 credentials; see the official
 [action documentation](https://github.com/aws-actions/configure-aws-credentials#oidc-configuration).
 
-## ECR and ECS
+## ECR and EC2 deployment
 
 Create the repository with basic scan-on-push enabled:
 
@@ -133,10 +149,12 @@ API for the immutable commit tag and fails closed at the deploy gate. Basic
 scanning covers image OS packages; Amazon Inspector enhanced continuous
 scanning can replace it in production.
 
-The demo deploy command forces an existing ECS service to redeploy. Its task
-definition must already reference this repository's `:demo` tag. This mutable
-tag keeps the POC small; production should register a task-definition revision
-that uses the pushed image digest and deploy that immutable revision.
+The deploy runs a remote command on the EC2 instance via SSM: `docker login`
+to ECR (using the instance's own role), `docker pull` the immutable
+commit-SHA image, then `docker rm -f` + `docker run` the container mapped to
+`EC2_APP_PORT`. It also tags `:demo` for convenience. This single-container
+`docker run` keeps the POC small; production would front it with a process
+manager or orchestrator and deploy by immutable digest.
 
 ## Jenkins credentials
 
@@ -146,7 +164,8 @@ available to a typical standalone controller:
 - `jenkins-aws-ecr`: username is the IAM access-key ID and password is its
   secret. Grant only ECR authorization, push, and scan-findings permissions.
 - `jenkins-aws-deploy`: the same field mapping for a separate IAM identity.
-  Grant only `ecs:UpdateService` on the named service.
+  Grant only `ssm:SendCommand` (on the instance + `AWS-RunShellScript` document)
+  and `ssm:GetCommandInvocation` (on `*`).
 
 Create them in **Manage Jenkins → Credentials**, never in this repository or
 JCasC. Rotate them after the demo. Then set the Jenkins build parameters and
