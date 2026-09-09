@@ -97,6 +97,13 @@ version can enter the lockfile), while **`min-release-age` blocks installation**
 way). Preventive plus fail-closed, one 7-day principle. Dependabot also advances
 the repo's SHA-pinned GitHub Actions so those pins do not silently go stale.
 
+Minor and patch Dependabot PRs are auto-merged once the required checks pass
+(`.github/workflows/dependabot-auto-merge.yml`): the checks still gate the
+merge, so a bump that fails dependency scanning, SAST, or tests never lands,
+and — thanks to the cooldown and `min-release-age` — an auto-merged version is
+already at least a week old. Major-version PRs are never auto-merged; they stay
+open for manual review because they can carry breaking changes.
+
 ## Static application security testing
 
 Semgrep OSS scans the application with two explicit Registry rulesets and one
