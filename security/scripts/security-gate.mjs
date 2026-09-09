@@ -3,13 +3,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { detectEcosystems } from './detect-ecosystems.mjs';
+
 const VALID_ACTIONS = new Set(['BLOCK', 'BLOCK_DEPLOY', 'EXCEPTION', 'LOG']);
 
 const DEFAULT_PATHS = {
   policy: 'security/policy.yaml',
+  // Checkout root used only for ecosystem detection (which language-native
+  // dependency reports are required vs cleanly skipped).
+  repoDir: '.',
   gitleaks: 'reports/gitleaks.json',
   trufflehog: 'reports/trufflehog.json',
   npmAudit: 'reports/npm-audit.json',
+  pipAudit: 'reports/pip-audit.json',
   osv: 'reports/osv-scanner.json',
   semgrep: 'reports/semgrep.json',
   baseline: 'security/baseline/semgrep-baseline.json',
@@ -144,6 +150,23 @@ async function readJson(path, label) {
   }
 }
 
+// Per-ecosystem dependency reports (npm audit, pip-audit) only exist when that
+// ecosystem is present in the target repo, so a missing file is a clean skip,
+// not an integrity failure. Malformed content is still fail-closed. OSV-Scanner
+// always runs and is the cross-ecosystem backstop, so dependency coverage is
+// never fully absent even when a language-native report is skipped.
+async function readOptionalJson(path, label) {
+  try {
+    await readFile(path, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return null;
+    }
+    throw new Error(`${label}: cannot read ${path}: ${error.message}`, { cause: error });
+  }
+  return readJson(path, label);
+}
+
 function normalizeSeverity(value) {
   assert(typeof value === 'string', 'severity must be a string');
   const severity = value.toLowerCase();
@@ -248,6 +271,77 @@ function evaluateNpmAudit(policy, report, findings) {
   }
 }
 
+// pip-audit's JSON differs from npm audit's in two ways that matter here:
+//   1. It reports NO severity/CVSS at all — each vuln carries only id,
+//      fix_versions, aliases, and description. We therefore classify every
+//      pip-audit finding fail-closed as `high`, so a known Python advisory can
+//      never be silently downgraded to a non-blocking LOG. OSV-Scanner remains
+//      the CVSS/severity source of record for Python packages.
+//   2. Fix availability is the `fix_versions` array (non-empty => a fix exists),
+//      not a boolean.
+// Shape: { dependencies: [ { name, version, vulns: [ { id, fix_versions, ... } ] } ] }
+// The same (package, id) pair can appear more than once, so findings are deduped.
+function evaluatePipAudit(policy, report, findings) {
+  assert(report && typeof report === 'object', 'pip-audit report must be an object');
+  assert(Array.isArray(report.dependencies), 'pip-audit report is missing dependencies array');
+
+  const seen = new Set();
+  for (const dependency of report.dependencies) {
+    assert(typeof dependency.name === 'string', 'pip-audit dependency is missing name');
+    // A dependency pip-audit could not resolve carries `skip_reason` and no vulns.
+    if (dependency.vulns === undefined) {
+      continue;
+    }
+    assert(
+      Array.isArray(dependency.vulns),
+      `pip-audit dependency ${dependency.name} has a non-array vulns field`
+    );
+
+    for (const vulnerability of dependency.vulns) {
+      assert(
+        typeof vulnerability.id === 'string',
+        `pip-audit finding for ${dependency.name} is missing id`
+      );
+
+      const key = `${dependency.name}\0${vulnerability.id}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+
+      if (vulnerability.id.startsWith('MAL-')) {
+        addFinding(findings, policy, {
+          source: 'pip-audit',
+          id: vulnerability.id,
+          package: dependency.name,
+          policyRule: 'dependencies.malicious_package',
+          reason: 'pip-audit malicious-package advisory blocks regardless of severity'
+        });
+        continue;
+      }
+
+      assert(
+        Array.isArray(vulnerability.fix_versions),
+        `pip-audit finding ${vulnerability.id} is missing fix_versions`
+      );
+      const fixAvailable = vulnerability.fix_versions.length > 0;
+      const policyRule = `dependencies.high_${fixAvailable ? 'with_fix' : 'no_fix'}`;
+
+      addFinding(findings, policy, {
+        source: 'pip-audit',
+        id: vulnerability.id,
+        package: dependency.name,
+        severity: 'high',
+        fixAvailable,
+        policyRule,
+        reason: `Python advisory (pip-audit reports no severity; treated as high); fix ${
+          fixAvailable ? 'available' : 'not available'
+        }`
+      });
+    }
+  }
+}
+
 const CVSS_VALUES = {
   AV: { N: 0.85, A: 0.62, L: 0.55, P: 0.2 },
   AC: { L: 0.77, H: 0.44 },
@@ -301,16 +395,22 @@ function cvssV3Score(vector) {
   return roundUpOneDecimal(base);
 }
 
+// Returns the highest CVSS v3 base score, or null when the advisory carries no
+// CVSS v3 severity at all. Many PyPI (PYSEC) advisories omit severity entirely,
+// which is legitimate data, not a malformed report — the caller defaults those
+// to `high` fail-closed. A present-but-non-array severity is still malformed.
 function osvScore(vulnerability) {
-  assert(Array.isArray(vulnerability.severity), `OSV ${vulnerability.id} is missing severity`);
+  if (vulnerability.severity === undefined) {
+    return null;
+  }
+  assert(Array.isArray(vulnerability.severity), `OSV ${vulnerability.id} severity must be an array`);
   const scores = vulnerability.severity
     .filter((entry) => entry.type === 'CVSS_V3')
     .map((entry) => {
       const numeric = Number(entry.score);
       return Number.isFinite(numeric) ? numeric : cvssV3Score(entry.score);
     });
-  assert(scores.length > 0, `OSV ${vulnerability.id} has no usable CVSS v3 score`);
-  return Math.max(...scores);
+  return scores.length > 0 ? Math.max(...scores) : null;
 }
 
 function osvSeverity(policy, score) {
@@ -333,8 +433,14 @@ function osvHasFix(vulnerability, scannedPackage) {
     `OSV ${vulnerability.id} has no affected range for ${scannedPackage.name}`
   );
 
+  // An advisory may express affected versions with `ranges` (events) or only a
+  // plain `versions` list. A fix is "available" when some range carries a `fixed`
+  // event; an entry that lacks ranges simply contributes no fix signal (rather
+  // than failing the report), so ecosystems that omit ranges degrade to no_fix.
   return affected.some((entry) => {
-    assert(Array.isArray(entry.ranges), `OSV ${vulnerability.id} affected entry lacks ranges`);
+    if (!Array.isArray(entry.ranges)) {
+      return false;
+    }
     return entry.ranges.some((range) => {
       assert(Array.isArray(range.events), `OSV ${vulnerability.id} range lacks events`);
       return range.events.some((event) => typeof event.fixed === 'string' && event.fixed !== '');
@@ -377,7 +483,8 @@ function evaluateOsv(policy, report, findings) {
         }
 
         const score = osvScore(vulnerability);
-        const severity = osvSeverity(policy, score);
+        // No CVSS v3 score (common for PyPI/PYSEC advisories) => fail-closed high.
+        const severity = score === null ? 'high' : osvSeverity(policy, score);
         const fixAvailable = osvHasFix(vulnerability, dependency.package);
         const suffix = ['critical', 'high'].includes(severity)
           ? `_${fixAvailable ? 'with_fix' : 'no_fix'}`
@@ -387,12 +494,12 @@ function evaluateOsv(policy, report, findings) {
           id: vulnerability.id,
           package: dependency.package.name,
           severity,
-          cvssScore: score,
+          ...(score === null ? {} : { cvssScore: score }),
           fixAvailable,
           policyRule: `dependencies.${severity}${suffix}`,
-          reason: `${severity} OSV advisory (CVSS ${score}); fix ${
-            fixAvailable ? 'available' : 'not available'
-          }`
+          reason: `${severity} OSV advisory (${
+            score === null ? 'no CVSS score; treated as high' : `CVSS ${score}`
+          }); fix ${fixAvailable ? 'available' : 'not available'}`
         });
       }
     }
@@ -532,18 +639,35 @@ export async function runSecurityGate(customPaths = {}) {
   try {
     const policy = parseSimplePolicy(await readFile(paths.policy, 'utf8'));
     validatePolicy(policy);
-    const [gitleaks, trufflehog, npmAudit, osv, semgrep, baseline] = await Promise.all([
+    // A language-native dependency report is REQUIRED (fail-closed on a missing
+    // file) only when the scanner that produces it would actually run — i.e. its
+    // audit-target file exists (package-lock.json for npm audit, requirements.txt
+    // for pip-audit). Otherwise its absence is a clean skip. OSV-Scanner is always
+    // required and covers every ecosystem's lockfiles, so dependency coverage is
+    // never fully absent even when a language-native report is skipped.
+    const ecosystems = await detectEcosystems(paths.repoDir);
+    const [gitleaks, trufflehog, osv, semgrep, baseline, npmAudit, pipAudit] = await Promise.all([
       readJson(paths.gitleaks, 'Gitleaks'),
       readJson(paths.trufflehog, 'TruffleHog'),
-      readJson(paths.npmAudit, 'npm audit'),
       readJson(paths.osv, 'OSV-Scanner'),
       readJson(paths.semgrep, 'Semgrep'),
-      readJson(paths.baseline, 'Semgrep baseline')
+      readJson(paths.baseline, 'Semgrep baseline'),
+      ecosystems.packageLock
+        ? readJson(paths.npmAudit, 'npm audit')
+        : readOptionalJson(paths.npmAudit, 'npm audit'),
+      ecosystems.requirementsTxt
+        ? readJson(paths.pipAudit, 'pip-audit')
+        : readOptionalJson(paths.pipAudit, 'pip-audit')
     ]);
     const findings = [];
 
     evaluateSecrets(policy, gitleaks, trufflehog, findings);
-    evaluateNpmAudit(policy, npmAudit, findings);
+    if (npmAudit !== null) {
+      evaluateNpmAudit(policy, npmAudit, findings);
+    }
+    if (pipAudit !== null) {
+      evaluatePipAudit(policy, pipAudit, findings);
+    }
     evaluateOsv(policy, osv, findings);
     evaluateSemgrep(policy, semgrep, baseline, findings);
     markBreakGlassEligibility(policy, findings);
@@ -585,9 +709,11 @@ export async function runSecurityGate(customPaths = {}) {
 function parseArguments(arguments_) {
   const aliases = {
     '--policy': 'policy',
+    '--repo-dir': 'repoDir',
     '--gitleaks': 'gitleaks',
     '--trufflehog': 'trufflehog',
     '--npm-audit': 'npmAudit',
+    '--pip-audit': 'pipAudit',
     '--osv': 'osv',
     '--semgrep': 'semgrep',
     '--baseline': 'baseline',

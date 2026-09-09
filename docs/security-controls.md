@@ -43,24 +43,57 @@ archival so raw credential fields are not retained.
 
 ## Dependency scanning
 
-**npm audit** queries the GitHub Advisory Database for the npm dependency graph
-recorded in `package-lock.json`. It is built into npm and provides a fast,
-ecosystem-specific view without installing dependencies.
+The framework is multi-ecosystem: it must work for any onboarded repo, not only
+Node ones. The dependency-scanning stage begins with **ecosystem detection**
+(`security/scripts/detect-ecosystems.mjs`) against the checkout, and runs the
+language-native scanner for what is actually present:
+
+- `package-lock.json` → **npm audit**
+- `requirements.txt` → **pip-audit**
+- both (a monorepo) → both run; neither → both skip cleanly, logged the same way
+  the AWS-not-configured case is skipped (never a confusing failure, never a
+  silent pass)
+
+**OSV-Scanner always runs regardless**, recursively over the checkout so it
+covers every supported lockfile (npm, PyPI, and others), and is the
+cross-ecosystem backstop that guarantees dependency coverage even when a
+language-native report is skipped.
+
+**npm audit** queries the GitHub Advisory Database for the npm graph in
+`package-lock.json`, built into npm, no install required. It reports a severity
+and `fixAvailable` per finding.
+
+**pip-audit** (pinned `pip-audit==2.10.1`) is the Python equivalent. It audits
+the pinned `requirements.txt` with `--no-deps`, so dependency *resolution* never
+runs — the same discipline as `npm ci` over `npm install`, keeping an untrusted
+`setup.py` from executing during the scan. Its JSON differs from npm audit's in
+two ways the gate accounts for: it reports **no severity** (only `id`,
+`fix_versions`, `aliases`, `description`), and fix availability is the
+`fix_versions` array rather than a boolean. Because pip-audit gives no severity,
+the gate classifies every pip-audit finding **fail-closed as High**, split by
+fix availability, so a known Python advisory can never be silently downgraded to
+a non-blocking log; OSV-Scanner remains the CVSS/severity source of record for
+Python packages. The same `(package, id)` advisory can appear more than once in
+pip-audit's output, so findings are deduped.
 
 **OSV-Scanner** queries OSV.dev, which aggregates advisories across sources and
-ecosystems. Its native JSON retains each advisory's `id`, including the
-distinct `MAL-` prefix used for known-malicious package advisories. The gate
-therefore treats malicious packages as a separate policy path that blocks
-regardless of severity, rather than treating them as ordinary vulnerable
-dependencies.
+ecosystems. Its `MAL-` prefix marks known-malicious packages, and this is
+**confirmed for PyPI as well as npm** (spot-checked: `fabrice` →
+`MAL-2024-10573`, `pytoileur` → `MAL-2024-10141`). The gate routes any `MAL-`
+id — from OSV or pip-audit — to a separate policy path that blocks regardless of
+severity, so no ecosystem-specific code was needed for malicious PyPI packages.
+Many PyPI (PYSEC) advisories carry no CVSS score; the gate treats those
+fail-closed as High rather than rejecting the report.
 
-Both Phase 6 tools scan the committed lockfile directly. Their native JSON is
-archived unchanged as `npm-audit.json` and `osv-scanner.json`; no advisory IDs,
-fix information, or severity data are discarded. GitHub Actions publishes them
-in `dependency-scan-reports`, while Jenkins exposes both files under the
-build's archived artifacts. The gate uses npm's `fixAvailable` and OSV's
-affected-range `fixed` events to separate blocking fixable High/Critical
-findings from visible non-blocking exceptions.
+Native JSON is archived unchanged as `npm-audit.json`, `pip-audit.json` (Python
+repos), and `osv-scanner.json`; no advisory IDs, fix, or severity data are
+discarded. The GitHub Actions framework publishes them in
+`dependency-scan-reports`. A language-native report is required (fail-closed on a
+missing file) only when its audit-target file exists, so a Python-only repo is
+not failed for lacking an `npm-audit.json`. (The Jenkins orchestrator currently
+runs npm audit and OSV-Scanner against `package-lock.json`; extending its
+detection and pip-audit for parity is a follow-up, tracked with the other
+Jenkins parity items.)
 
 The security workflow and Jenkins pipeline run weekly because advisory data
 can change even when the lockfile does not. The standalone application checks
