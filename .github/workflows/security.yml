@@ -137,7 +137,16 @@ jobs:
       - name: Create report directory
         run: mkdir -p reports
 
+      - name: Detect dependency ecosystems
+        # Decides which language-native scanner runs. npm audit needs a
+        # package-lock.json; pip-audit needs a requirements.txt. OSV-Scanner runs
+        # regardless and covers every ecosystem's lockfiles. Neither present is a
+        # clean skip, mirroring the AWS-not-configured detect-and-skip pattern.
+        id: detect
+        run: node security/scripts/detect-ecosystems.mjs --github-output
+
       - name: Run npm audit (report only)
+        if: steps.detect.outputs.package_lock == 'true'
         continue-on-error: true
         run: |
           for attempt in 1 2 3; do
@@ -158,18 +167,43 @@ jobs:
           exit 1
 
       - name: Validate npm audit report
+        if: steps.detect.outputs.package_lock == 'true'
         run: |
           node security/scripts/validate-dependency-report.mjs \
             npm-audit reports/npm-audit.json
           echo "npm audit report is valid; the security gate evaluates findings"
 
+      - name: Run pip-audit (report only)
+        # Python's npm-audit-equivalent. Pinned tool version; audits the pinned
+        # requirements.txt with --no-deps so dependency RESOLUTION never runs (no
+        # untrusted setup.py execution), the same discipline as npm ci vs install.
+        if: steps.detect.outputs.requirements_txt != ''
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            -v "$GITHUB_WORKSPACE/reports:/reports" \
+            -w /repo \
+            python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea \
+            sh -c 'pip install --quiet --no-cache-dir pip-audit==2.10.1 && pip-audit --requirement requirements.txt --no-deps --format json > /reports/pip-audit.json'
+
+      - name: Validate pip-audit report
+        if: steps.detect.outputs.requirements_txt != ''
+        run: |
+          node security/scripts/validate-dependency-report.mjs \
+            pip-audit reports/pip-audit.json
+          echo "pip-audit report is valid; the security gate evaluates findings"
+
       - name: Run OSV-Scanner (report only)
+        # Cross-ecosystem backstop: recursively scans the checkout for every
+        # supported lockfile (package-lock.json, requirements.txt, poetry.lock,
+        # Pipfile.lock, ...) rather than a single hard-coded file.
         continue-on-error: true
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475 \
-            scan source --lockfile=/repo/package-lock.json --format=json \
+            scan source --recursive /repo --format=json \
             > reports/osv-scanner.json
 
       - name: Validate OSV-Scanner report
@@ -182,9 +216,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          # pip-audit.json is present only for Python repos; upload-artifact errors
+          # only when NO listed file matches, so this stays green for npm-only repos.
           name: dependency-scan-reports
           path: |
             reports/npm-audit.json
+            reports/pip-audit.json
             reports/osv-scanner.json
           if-no-files-found: error
           retention-days: 14

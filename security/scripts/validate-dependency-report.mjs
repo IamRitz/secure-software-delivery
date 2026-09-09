@@ -18,6 +18,16 @@ if (scanner === 'npm-audit') {
   }
 
   console.log(`npm-audit vulnerabilities=${report.metadata.vulnerabilities.total}`);
+} else if (scanner === 'pip-audit') {
+  if (!Array.isArray(report.dependencies)) {
+    throw new Error('pip-audit report does not have a dependencies array');
+  }
+
+  const vulnCount = report.dependencies
+    .flatMap((dependency) => dependency.vulns ?? [])
+    .filter((vulnerability) => typeof vulnerability.id === 'string').length;
+
+  console.log(`pip-audit vulnerabilities=${vulnCount}`);
 } else if (scanner === 'osv-scanner') {
   if (!Array.isArray(report.results)) {
     throw new Error('OSV-Scanner report does not have a results array');

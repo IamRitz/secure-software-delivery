@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -216,6 +216,167 @@ describe('security gate', () => {
       assert.match(block.stdout, /SECURITY GATE: BLOCK/);
     } finally {
       await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
+const PIP = join(FIXTURES, 'pip-audit');
+const NO_FILE = join(FIXTURES, 'does-not-exist.json');
+
+async function repoDirWith(files) {
+  const dir = await mkdtemp(join(tmpdir(), 'gate-repo-'));
+  for (const [name, content] of Object.entries(files)) {
+    await writeFile(join(dir, name), content);
+  }
+  return dir;
+}
+
+function hasIntegrityBlock(result) {
+  return result.findings.some((finding) => finding.policyRule === 'gate.report_integrity');
+}
+
+describe('security gate — pip-audit (Python) parsing', () => {
+  it('blocks a fixable Python advisory and dedupes repeated (package, id) pairs', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'requests==2.19.1\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'high-with-fix.json')
+      });
+      const pip = result.findings.filter((finding) => finding.source === 'pip-audit');
+      assert.equal(pip.length, 1); // the duplicate advisory is collapsed
+      assert.equal(pip[0].policyRule, 'dependencies.high_with_fix');
+      assert.equal(pip[0].action, 'BLOCK');
+      assert.equal(pip[0].severity, 'high');
+      assert.equal(result.verdict, 'BLOCK');
+      assert.equal(result.breakGlass.eligible, true);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats an unfixable Python advisory as a tracked exception', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'x\n' });
+    try {
+      const { result, exceptions } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'high-no-fix.json')
+      });
+      const pip = result.findings.find((finding) => finding.source === 'pip-audit');
+      assert.equal(pip.policyRule, 'dependencies.high_no_fix');
+      assert.equal(pip.action, 'EXCEPTION');
+      assert.equal(result.verdict, 'PASS-WITH-EXCEPTIONS');
+      assert.equal(exceptions.exceptions.length, 1);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes a pip-audit MAL- advisory to malicious_package (never break-glass)', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'x\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'malicious.json')
+      });
+      const pip = result.findings.find((finding) => finding.source === 'pip-audit');
+      assert.equal(pip.policyRule, 'dependencies.malicious_package');
+      assert.equal(pip.action, 'BLOCK');
+      assert.equal(pip.breakGlassEligible, false);
+      assert.equal(result.breakGlass.eligible, false);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes clean pip-audit output (empty vulns and skipped deps)', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'x\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'clean.json')
+      });
+      assert.equal(result.findings.filter((finding) => finding.source === 'pip-audit').length, 0);
+      assert.equal(result.verdict, 'PASS');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fail-closed BLOCKs on a malformed pip-audit report when Python is present', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'x\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'malformed.json')
+      });
+      assert.equal(result.verdict, 'BLOCK');
+      assert.equal(onlyFinding(result).policyRule, 'gate.report_integrity');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires a pip-audit report when Python is detected (missing => integrity BLOCK)', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'x\n' });
+    try {
+      const { result } = await evaluate({ repoDir, npmAudit: NO_FILE, pipAudit: NO_FILE });
+      assert.equal(result.verdict, 'BLOCK');
+      assert.match(onlyFinding(result).reason, /missing report file/);
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('security gate — ecosystem detect-and-skip', () => {
+  it('a Python-only repo skips npm audit cleanly and runs pip-audit', async () => {
+    const repoDir = await repoDirWith({ 'requirements.txt': 'requests==2.19.1\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: NO_FILE,
+        pipAudit: join(PIP, 'high-with-fix.json')
+      });
+      assert.equal(result.findings.some((finding) => finding.source === 'npm-audit'), false);
+      assert.equal(result.findings.some((finding) => finding.source === 'pip-audit'), true);
+      assert.equal(hasIntegrityBlock(result), false); // absent npm audit is a clean skip
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a repo with neither ecosystem skips both audits cleanly (no confusing failure)', async () => {
+    const repoDir = await repoDirWith({ 'README.md': '# hi' });
+    try {
+      const { result } = await evaluate({ repoDir, npmAudit: NO_FILE, pipAudit: NO_FILE });
+      assert.equal(result.findings.some((finding) => finding.source === 'npm-audit'), false);
+      assert.equal(result.findings.some((finding) => finding.source === 'pip-audit'), false);
+      assert.equal(hasIntegrityBlock(result), false);
+      assert.equal(result.verdict, 'PASS');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a monorepo with both ecosystems runs both audits', async () => {
+    const repoDir = await repoDirWith({ 'package-lock.json': '{}', 'requirements.txt': 'x\n' });
+    try {
+      const { result } = await evaluate({
+        repoDir,
+        npmAudit: join(CLEAN, 'npm-audit.json'),
+        pipAudit: join(PIP, 'high-no-fix.json')
+      });
+      assert.equal(hasIntegrityBlock(result), false);
+      assert.equal(result.findings.some((finding) => finding.source === 'pip-audit'), true);
+      assert.equal(result.verdict, 'PASS-WITH-EXCEPTIONS');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
     }
   });
 });
