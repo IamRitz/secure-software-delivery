@@ -1,0 +1,47 @@
+name: Dependabot auto-merge
+
+# Enables GitHub's auto-merge on Dependabot's minor and patch PRs, so they merge
+# themselves once the required checks (security-gate + Application checks) pass —
+# turning routine bumps into no-touch maintenance while the checks still gate the
+# merge. Major-version PRs are deliberately NOT auto-merged: they can carry
+# breaking changes and are left open for manual review.
+#
+# Safety posture: this never bypasses a check. `gh pr merge --auto` only queues
+# the merge; branch protection still requires every configured check to be green
+# first, so a bump that fails dependency scanning, SAST, or tests never merges.
+# The 7-day Dependabot cooldown and npm min-release-age mean an auto-merged
+# version is already at least a week old, not a same-day release.
+#
+# Requires, one-time in repo settings:
+#   * Settings -> General -> "Allow auto-merge" enabled.
+#   * Branch protection on main requiring status checks (security-gate,
+#     Application checks) — without required checks, auto-merge would merge
+#     immediately with nothing to wait on.
+
+on: pull_request
+
+# Dependabot-triggered runs get a read-only token by default; grant just enough
+# to enable auto-merge on the PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # Only act on Dependabot's own PRs; a no-op for everyone else's.
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge for minor and patch updates
+        # For grouped PRs this reports the highest bump in the group; our groups
+        # only ever contain minor/patch, so a major can only arrive as its own
+        # (ungrouped) PR, which this condition excludes.
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.update-type == 'version-update:semver-patch' }}
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
