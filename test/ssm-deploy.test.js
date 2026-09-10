@@ -27,6 +27,13 @@ describe('ssm-deploy command building', () => {
     );
   });
 
+  it('deploys by immutable digest when one is supplied (preferred over tag)', () => {
+    assert.equal(
+      buildImage({ ...options, image_digest: 'sha256:deadbeef' }),
+      '157328692276.dkr.ecr.us-east-1.amazonaws.com/secure-software-delivery@sha256:deadbeef'
+    );
+  });
+
   it('produces a fail-fast docker login/pull/run remote command', () => {
     const commands = buildDeployCommands(options);
     assert.equal(commands[0], 'set -e');

@@ -14,6 +14,22 @@ The workflow remains safe and useful without AWS. It builds the container on a
 skipped. Configure the following only when a disposable demo AWS environment
 is available.
 
+## Digest chaining (scan == deploy)
+
+The thing Trivy scanned, the thing ECR scanned, and the thing EC2 runs are bound
+to a single immutable digest so a mutable tag can never be swapped in between:
+
+1. **build → scan:** `container-build` records Trivy's `Metadata.ImageID` (the
+   image config digest) as a job output.
+2. **build → push:** `ecr-push` asserts the loaded artifact's `docker inspect .Id`
+   equals that ImageID before pushing, then records the pushed **manifest digest**.
+3. **push → scan:** `image-scan` polls ECR `--image-digest <that manifest digest>`;
+   `poll-ecr-scan.mjs` asserts ECR scanned exactly that digest.
+4. **scan → gate:** `deploy-gate` re-asserts the report's digest equals the pushed
+   digest before running `image-gate.mjs`.
+5. **scan → deploy:** `deploy` runs `ssm-deploy.mjs --image-digest`, so the
+   instance `docker pull`s `registry/repo@sha256:…`, never a tag.
+
 ## GitHub Actions: OIDC, not access keys
 
 1. Add the GitHub OIDC provider in IAM with URL

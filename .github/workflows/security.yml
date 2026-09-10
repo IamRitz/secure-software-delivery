@@ -418,16 +418,20 @@ jobs:
 
   container-build:
     name: Container build
-    # No dependency on security-gate: this job holds zero AWS/ECR credentials and
-    # only produces a local image artifact, so it builds in parallel with the
-    # scanners and the gate instead of waiting for them. The credential boundary
-    # is enforced downstream — aws-configuration and aws-delivery each require a
-    # passing security-gate — so on a BLOCK the image is built but never pushed
-    # or deployed (a wasted build, never an unsafe one).
-    if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/main'
+    # Holds ZERO cloud credentials. Runs on pull_request as well as main so image
+    # CVEs are caught by Trivy BEFORE merge, not only after the post-push ECR
+    # scan. The image artifact is uploaded only on main (nothing to deliver from a
+    # PR). The credential boundary is enforced downstream: aws-configuration and
+    # ecr-push carry an explicit push-to-main guard, so this job running on PRs
+    # can never reach an AWS role.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      # Trivy's Metadata.ImageID (the image config digest) — the anchor of the
+      # build -> push -> scan -> deploy digest chain (see docs/aws-setup.md).
+      image_id: ${{ steps.trivy-id.outputs.image_id }}
 
     steps:
       - name: Check out repository
@@ -439,22 +443,72 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build application image without AWS credentials
-        # type=gha reuses unchanged layers (e.g. the npm ci layer when
-        # package-lock.json is unchanged) across runs. This is a caching change
-        # only — same Dockerfile, same context, so the image content is identical
-        # to an uncached build; unchanged layers are restored rather than rebuilt.
+        # PRs use the type=gha layer cache for fast feedback; the release build on
+        # main uses no-cache so a potentially poisoned Actions cache entry can
+        # never be baked into the image that actually ships (review §C3).
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true
+          no-cache: ${{ github.ref == 'refs/heads/main' }}
           tags: secure-software-delivery:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Export application image
-        run: docker save "secure-software-delivery:$GITHUB_SHA" | gzip > application-image.tar.gz
+      - name: Export image tarball for scanning
+        run: docker save -o application-image.tar "secure-software-delivery:$GITHUB_SHA"
 
-      - name: Upload application image
+      - name: Trivy image scan (report only — image-gate.mjs decides)
+        # Pinned by digest and verified (see security/trivy-provenance.md). Scans
+        # the saved tarball via --input; the Docker socket is never mounted into
+        # the scanner. --exit-code 0: the scanner reports, our reviewed gate judges.
+        run: |
+          mkdir -p reports "$RUNNER_TEMP/trivy-cache"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/application-image.tar:/in/image.tar:ro" \
+            -v "$GITHUB_WORKSPACE/reports:/reports" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
+            ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+            image --input /in/image.tar \
+              --scanners vuln,secret \
+              --pkg-types os,library \
+              --format json --output /reports/trivy-image.json \
+              --exit-code 0 --quiet
+
+      - name: Record scanned image ID
+        id: trivy-id
+        run: |
+          image_id="$(node -e 'process.stdout.write(require("./reports/trivy-image.json").Metadata.ImageID)')"
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+          echo "Trivy scanned image config digest: $image_id"
+
+      - name: Pre-push image gate (fail-closed)
+        # Same policy code as the post-push ECR gate, Trivy source. A Critical/High
+        # finding, a secret, a missing OS family (false clean) or an EOSL OS makes
+        # this exit non-zero and fails the check — on the PR, before merge.
+        run: >-
+          node security/scripts/image-gate.mjs
+          --source trivy
+          --report reports/trivy-image.json
+          --output reports/image-gate-prepush.json
+
+      - name: Upload Trivy + pre-push gate reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-reports-${{ github.sha }}
+          path: |
+            reports/trivy-image.json
+            reports/image-gate-prepush.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Compress and upload application image (main only)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        run: gzip -f application-image.tar
+
+      - name: Upload application image (main only)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: application-image-${{ github.sha }}
@@ -471,7 +525,15 @@ jobs:
     needs:
       - security-gate
       - container-build
-    if: needs.security-gate.result == 'success'
+    # EXPLICIT push-to-main guard. container-build now also runs on pull_request
+    # (to scan the image with Trivy before merge), so it no longer implicitly
+    # keeps the AWS jobs off PRs. Without this condition a PR run could reach the
+    # push role — a credential-boundary regression. This event/ref check, plus the
+    # OIDC trust policies' `sub` being pinned to `refs/heads/main`, means a PR can
+    # assume no AWS role at all.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' &&
+      needs.security-gate.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       configured: ${{ steps.detect.outputs.configured }}
@@ -521,7 +583,10 @@ jobs:
       - security-gate
       - container-build
       - aws-configuration
+    # Same explicit push-to-main guard as aws-configuration (defence in depth):
+    # this is the first job to assume an AWS role, so it must never run for a PR.
     if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' &&
       needs.security-gate.result == 'success' &&
       needs.aws-configuration.outputs.configured == 'true'
     runs-on: ubuntu-latest
@@ -530,6 +595,7 @@ jobs:
       id-token: write
     outputs:
       registry: ${{ steps.ecr-login.outputs.registry }}
+      image_digest: ${{ steps.push.outputs.image_digest }}
     steps:
       - name: Download credential-free image build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -550,16 +616,31 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
 
-      - name: Push immutable and demo image tags
+      - name: Verify identity, push, and record the pushed manifest digest
+        id: push
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          EXPECTED_IMAGE_ID: ${{ needs.container-build.outputs.image_id }}
         run: |
+          # Digest chain link 1 (build -> push): the loaded artifact's config
+          # digest must equal the ImageID Trivy scanned pre-push, or a different
+          # image slipped in between scan and push.
+          loaded_id="$(docker inspect --format '{{.Id}}' "secure-software-delivery:$GITHUB_SHA")"
+          if [ "$loaded_id" != "$EXPECTED_IMAGE_ID" ]; then
+            echo "loaded image $loaded_id != Trivy-scanned $EXPECTED_IMAGE_ID" >&2
+            exit 1
+          fi
           target="$ECR_REGISTRY/$ECR_REPOSITORY"
           docker tag "secure-software-delivery:$GITHUB_SHA" "$target:$GITHUB_SHA"
           docker tag "secure-software-delivery:$GITHUB_SHA" "$target:demo"
           docker push "$target:$GITHUB_SHA"
           docker push "$target:demo"
+          # Digest chain link 2: capture the immutable pushed manifest digest that
+          # the scan and deploy jobs will pin to.
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$target:$GITHUB_SHA" | cut -d@ -f2)"
+          echo "image_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed manifest digest: $digest"
 
   image-scan:
     name: Image scan
@@ -591,15 +672,19 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: ssd-image-scan
 
-      - name: Poll ECR image scan
+      - name: Poll ECR image scan (by digest)
         continue-on-error: true
         env:
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           AWS_REGION: ${{ vars.AWS_REGION }}
+          # Digest chain link 3 (push -> scan): poll ECR for the exact manifest
+          # that ecr-push pushed, not whatever the tag currently points at.
+          IMAGE_DIGEST: ${{ needs.ecr-push.outputs.image_digest }}
         run: |
           mkdir -p reports
           node security/scripts/poll-ecr-scan.mjs \
             --repository "$ECR_REPOSITORY" \
+            --image-digest "$IMAGE_DIGEST" \
             --image-tag "$GITHUB_SHA" \
             --region "$AWS_REGION" \
             --output reports/ecr-image-scan.json
@@ -625,6 +710,7 @@ jobs:
     # the deploy job (which needs it) is skipped and never starts.
     needs:
       - image-scan
+      - ecr-push
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -645,6 +731,19 @@ jobs:
         with:
           name: ecr-image-scan
           path: reports
+
+      - name: Assert the scanned digest is the pushed digest
+        # Digest chain link 4: the report the gate is about to judge must be for
+        # the exact manifest ecr-push pushed. (poll-ecr-scan already bound this by
+        # polling by digest; re-assert here so the gate job is self-contained.)
+        env:
+          IMAGE_DIGEST: ${{ needs.ecr-push.outputs.image_digest }}
+        run: |
+          scanned="$(node -e 'process.stdout.write((require("./reports/ecr-image-scan.json").image||{}).imageDigest||"")' 2>/dev/null || true)"
+          if [ -n "$scanned" ] && [ "$scanned" != "$IMAGE_DIGEST" ]; then
+            echo "scanned digest $scanned != pushed digest $IMAGE_DIGEST" >&2
+            exit 1
+          fi
 
       - name: Evaluate deploy policy (fail-closed)
         run: node security/scripts/image-gate.mjs
@@ -700,11 +799,14 @@ jobs:
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
           EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '3000' }}
+          # Digest chain link 5 (scan -> deploy): pull the exact manifest that was
+          # scanned and gated, by digest — not a mutable tag.
+          IMAGE_DIGEST: ${{ needs.ecr-push.outputs.image_digest }}
         run: |
           node security/scripts/ssm-deploy.mjs \
             --instance-id "$EC2_INSTANCE_ID" \
             --region "$AWS_REGION" \
             --registry "$ECR_REGISTRY" \
             --repository "$ECR_REPOSITORY" \
-            --image-tag "$GITHUB_SHA" \
+            --image-digest "$IMAGE_DIGEST" \
             --app-port "$EC2_APP_PORT"

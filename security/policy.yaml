@@ -33,6 +33,16 @@ break_glass:
   report_integrity: NEVER
 
 image:
+  # Trivy pre-push scan reports fix availability, so it uses the same
+  # with_fix/no_fix model as dependencies: a fixable Critical/High blocks (a
+  # developer can act on it), an unfixable one is a tracked EXCEPTION rather than
+  # a permanent block waiting on an upstream patch.
+  critical_with_fix: BLOCK_DEPLOY
+  high_with_fix: BLOCK_DEPLOY
+  critical_no_fix: EXCEPTION
+  high_no_fix: EXCEPTION
+  # ECR basic scanning reports no fix availability, so it falls back to
+  # severity-only and conservatively blocks all Critical/High.
   critical: BLOCK_DEPLOY
   high: BLOCK_DEPLOY
   medium: LOG

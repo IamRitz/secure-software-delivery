@@ -22,9 +22,15 @@ function parseArguments(argv) {
     assert(key && value, `incomplete argument ${argv[index]}`);
     values[key] = value;
   }
-  for (const required of ['instance_id', 'region', 'registry', 'repository', 'image_tag']) {
+  for (const required of ['instance_id', 'region', 'registry', 'repository']) {
     assert(values[required], `missing --${required.replaceAll('_', '-')}`);
   }
+  // Deploy the exact scanned+approved artifact by immutable digest when given;
+  // fall back to tag otherwise.
+  assert(
+    values.image_digest || values.image_tag,
+    'missing --image-digest (preferred) or --image-tag'
+  );
   return {
     ...values,
     container_name: values.container_name ?? 'secure-software-delivery',
@@ -34,8 +40,12 @@ function parseArguments(argv) {
   };
 }
 
-export function buildImage({ registry, repository, image_tag }) {
-  return `${registry}/${repository}:${image_tag}`;
+// Pull by digest (registry/repo@sha256:…) when a digest is provided — the thing
+// scanned is provably the thing deployed — otherwise by tag.
+export function buildImage({ registry, repository, image_tag, image_digest }) {
+  return image_digest
+    ? `${registry}/${repository}@${image_digest}`
+    : `${registry}/${repository}:${image_tag}`;
 }
 
 // The remote shell the instance runs. `set -e` so any failed step (login, pull,
