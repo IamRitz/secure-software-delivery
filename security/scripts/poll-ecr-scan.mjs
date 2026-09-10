@@ -19,9 +19,16 @@ function parseArguments(arguments_) {
     values[key] = value;
   }
 
-  for (const required of ['repository', 'image_tag', 'region', 'output']) {
+  for (const required of ['repository', 'region', 'output']) {
     assert(values[required], `missing --${required.replaceAll('_', '-')}`);
   }
+  // Prefer polling by immutable digest (the pushed manifest) so the scan result
+  // is provably for the exact artifact that was pushed, not whatever a mutable
+  // tag currently points at. Fall back to tag when no digest is supplied.
+  assert(
+    values.image_digest || values.image_tag,
+    'missing --image-digest (preferred) or --image-tag'
+  );
   return {
     ...values,
     maxAttempts: Number(values.max_attempts ?? 40),
@@ -54,7 +61,7 @@ function awsInvocation(options) {
     '--repository-name',
     options.repository,
     '--image-id',
-    `imageTag=${options.image_tag}`,
+    options.image_digest ? `imageDigest=${options.image_digest}` : `imageTag=${options.image_tag}`,
     '--region',
     options.region,
     '--output',
@@ -99,6 +106,12 @@ export function normalizeEcrResponse(response, options) {
     'ECR response lacks findingSeverityCounts'
   );
   assert(typeof response.imageId?.imageDigest === 'string', 'ECR response lacks image digest');
+  // If we polled by digest, bind the result: ECR must have scanned that exact
+  // manifest, not a different one behind the same tag.
+  assert(
+    !options.image_digest || response.imageId.imageDigest === options.image_digest,
+    `ECR scan digest ${response.imageId.imageDigest} does not match requested ${options.image_digest}`
+  );
 
   const severityMap = {
     CRITICAL: 'critical',

@@ -40,19 +40,26 @@ Only the security workflow has a Monday weekly schedule. This catches
 advisories published for already-locked dependencies and refreshes the SAST
 report without pointlessly scheduling the standalone application workflow.
 
-For pull requests, the security workflow ends at `security-gate`: no image is
-built and no AWS job is eligible. For a push or manual dispatch on `main`,
-`container-build` runs **in parallel** with the scanners and the gate rather
-than after them. It has only `contents: read`, holds no AWS credentials, builds
-the Dockerfile (with a `type=gha` layer cache so an unchanged `npm ci` layer is
-restored instead of rebuilt), and uploads the image as a one-day artifact.
-Because it holds no credentials it does not wait for the gate; the credential
-boundary is enforced on the jobs that follow. `aws-configuration` and the
-delivery jobs require `needs.security-gate.result == 'success'`, so on a BLOCK
-the parallel image is built but never pushed or deployed — a wasted build, never
-an unsafe one. `aws-configuration` checks the required repository variables; if
-any are absent, it emits an explicit notice and the delivery jobs show as
-skipped.
+`container-build` runs on **every** event except the weekly schedule —
+including pull requests — because it also **scans the built image with Trivy
+before merge**. It has only `contents: read`, holds no AWS credentials, builds
+the Dockerfile, `docker save`s a tarball, and scans it with a digest-pinned Trivy
+(`--input`, no Docker socket mounted; see `security/trivy-provenance.md`). A
+digest-pinned Trivy plus `image-gate.mjs --source trivy` is the **pre-push image
+gate**: a Critical/High CVE, a baked-in secret, an undetectable OS ("false
+clean") or an end-of-life OS fails the check on the PR, not after merge. Trivy
+runs with `--exit-code 0` — the reviewed gate decides, never the scanner.
+
+Because container-build now runs on PRs, it no longer implicitly keeps the AWS
+jobs off PRs. `aws-configuration` and `ecr-push` therefore carry an **explicit** guard —
+`(push || workflow_dispatch) && ref == refs/heads/main` — and the OIDC trust
+policies pin `sub` to `refs/heads/main`. `workflow_dispatch` is included because
+it is manually triggered and sits in the same trust tier as merge access; the
+security property that matters is that **`pull_request` is excluded**, so a PR
+assumes no AWS role and reaches no delivery job (they `need` `ecr-push`, which is
+skipped on a PR). The image artifact is uploaded only on `main`. On a BLOCK the image is
+still built and scanned but never pushed or deployed — a wasted build, never an
+unsafe one.
 
 Delivery is split into four visibly-named jobs so the two-gate architecture is
 legible in the Actions graph and each holds least-privilege credentials, rather

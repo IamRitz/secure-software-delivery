@@ -10,6 +10,8 @@ const DEFAULT_PATHS = {
   output: 'reports/image-gate.json'
 };
 
+const DEFAULT_SOURCE = 'ecr';
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -38,10 +40,21 @@ async function readJson(path) {
 }
 
 function validatePolicy(policy) {
+  // Severity-only keys (ECR basic scan fallback — no fix data).
   for (const severity of ['critical', 'high', 'medium', 'low']) {
     const action = policyAction(policy, `image.${severity}`);
     const expected = ['critical', 'high'].includes(severity) ? 'BLOCK_DEPLOY' : 'LOG';
     assert(action === expected, `image.${severity} must be ${expected} for this POC`);
+  }
+  // with_fix/no_fix keys (Trivy pre-push — fix availability known), mirroring the
+  // dependency model: fixable Critical/High blocks, unfixable is an EXCEPTION.
+  for (const [path, expected] of [
+    ['image.critical_with_fix', 'BLOCK_DEPLOY'],
+    ['image.high_with_fix', 'BLOCK_DEPLOY'],
+    ['image.critical_no_fix', 'EXCEPTION'],
+    ['image.high_no_fix', 'EXCEPTION']
+  ]) {
+    assert(policyAction(policy, path) === expected, `${path} must be ${expected} for this POC`);
   }
 }
 
@@ -101,19 +114,140 @@ function evaluate(policy, report) {
   };
 }
 
+// Trivy severities -> our four levels. UNKNOWN maps to `high`, the same
+// fail-closed choice already made for OSV advisories that carry no CVSS.
+function trivySeverity(raw) {
+  const severity = String(raw ?? '').toLowerCase();
+  if (severity === 'unknown' || severity === '') {
+    return 'high';
+  }
+  assert(
+    ['critical', 'high', 'medium', 'low'].includes(severity),
+    `unsupported Trivy severity ${raw}`
+  );
+  return severity;
+}
+
+// Normalise a raw Trivy `image` JSON report (SchemaVersion 2) and evaluate it
+// against the same image policy. Report-integrity is fail-closed: a scan that
+// could not actually inspect the image (no OS detected, end-of-life OS) reports
+// zero findings, which must BLOCK rather than pass as clean.
+function evaluateTrivy(policy, report) {
+  assert(report?.SchemaVersion === 2, 'Trivy report has unsupported SchemaVersion (expected 2)');
+  assert(
+    report.ArtifactType === 'container_image',
+    'Trivy report is not a container_image artifact'
+  );
+  assert(
+    typeof report.Metadata?.ImageID === 'string' && report.Metadata.ImageID.startsWith('sha256:'),
+    'Trivy report lacks a Metadata.ImageID (sha256 config digest)'
+  );
+  assert(Array.isArray(report.Results), 'Trivy report lacks a Results array');
+
+  // False-clean guard: if Trivy could not identify the OS it scans no OS
+  // packages and returns zero vulnerabilities — "clean" would actually mean
+  // "did not understand the image". Require a detected OS family AND an os-pkgs
+  // result class; either missing is a report-integrity BLOCK.
+  const osFamily = report.Metadata?.OS?.Family;
+  assert(
+    typeof osFamily === 'string' && osFamily !== '',
+    'Trivy did not detect an OS family — a zero-finding result would be a false clean'
+  );
+  assert(
+    report.Results.some((result) => result.Class === 'os-pkgs'),
+    'Trivy produced no os-pkgs result — the OS layer was not scanned (false clean)'
+  );
+
+  // End-of-life OS: advisories stop, so "no known vulnerabilities" is unknowable.
+  assert(report.Metadata.OS?.EOSL !== true, `OS ${osFamily} is end-of-life (EOSL) — no advisories`);
+
+  const findings = [];
+  const seen = new Set();
+  for (const result of report.Results) {
+    for (const vulnerability of result.Vulnerabilities ?? []) {
+      assert(typeof vulnerability.VulnerabilityID === 'string', 'Trivy vulnerability lacks an ID');
+      // Trivy can list the same CVE under more than one target; dedupe by
+      // (id, package) so the gate output has one row per real finding.
+      const key = `${vulnerability.VulnerabilityID}\0${vulnerability.PkgName ?? ''}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const severity = trivySeverity(vulnerability.Severity);
+      const fixAvailable =
+        typeof vulnerability.FixedVersion === 'string' && vulnerability.FixedVersion !== '';
+      // Critical/High split on fix availability (with_fix -> BLOCK_DEPLOY,
+      // no_fix -> EXCEPTION); medium/low stay severity-only LOG.
+      const suffix = ['critical', 'high'].includes(severity)
+        ? `_${fixAvailable ? 'with_fix' : 'no_fix'}`
+        : '';
+      const policyRule = `image.${severity}${suffix}`;
+      findings.push({
+        source: 'trivy',
+        id: vulnerability.VulnerabilityID,
+        package: vulnerability.PkgName,
+        severity,
+        fixAvailable,
+        action: policyAction(policy, policyRule),
+        policyRule,
+        reason: `${severity} image finding; fix ${fixAvailable ? 'available' : 'not available'}`
+      });
+    }
+    // Secrets baked into layers (e.g. an .npmrc token) are a hard BLOCK and are
+    // never break-glass eligible — a leaked credential has no "accept" path.
+    for (const secret of result.Secrets ?? []) {
+      assert(typeof secret.RuleID === 'string', 'Trivy secret finding lacks a RuleID');
+      findings.push({
+        source: 'trivy',
+        id: secret.RuleID,
+        severity: 'critical',
+        action: 'BLOCK_DEPLOY',
+        policyRule: 'image.secret',
+        reason: `secret detected in image layer (${secret.Title ?? secret.RuleID})`
+      });
+    }
+  }
+
+  const blockDeploy = findings.filter((finding) => finding.action === 'BLOCK_DEPLOY').length;
+  const exception = findings.filter((finding) => finding.action === 'EXCEPTION').length;
+  const log = findings.filter((finding) => finding.action === 'LOG').length;
+  return {
+    // Three-state, mirroring the dependency gate: an unfixable Critical/High is a
+    // tracked EXCEPTION (deploy proceeds) rather than a permanent block.
+    verdict:
+      blockDeploy > 0 ? 'BLOCK_DEPLOY' : exception > 0 ? 'DEPLOY-WITH-EXCEPTIONS' : 'DEPLOY',
+    summary: { blockDeploy, exception, log },
+    exceptions: findings.filter((finding) => finding.action === 'EXCEPTION'),
+    image: {
+      // The config digest Trivy scanned — the anchor of the build->push->deploy
+      // digest chain (see docs/aws-setup.md §digest chaining).
+      imageId: report.Metadata.ImageID,
+      os: { family: osFamily, name: report.Metadata.OS?.Name, eosl: report.Metadata.OS?.EOSL === true },
+      // Scan time; Trivy's vuln-DB timestamp is printed to stderr, not the JSON,
+      // so it is not available to record here.
+      scannedAt: report.CreatedAt ?? null
+    },
+    findings
+  };
+}
+
 async function writeResult(path, result) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(result, null, 2)}\n`);
 }
 
 export async function runImageGate(customPaths = {}) {
-  const paths = { ...DEFAULT_PATHS, ...customPaths };
+  const paths = { source: DEFAULT_SOURCE, ...DEFAULT_PATHS, ...customPaths };
   let result;
 
   try {
     const policy = parseSimplePolicy(await readFile(paths.policy, 'utf8'));
     validatePolicy(policy);
-    result = evaluate(policy, await readJson(paths.report));
+    const report = await readJson(paths.report);
+    result =
+      paths.source === 'trivy'
+        ? evaluateTrivy(policy, report)
+        : evaluate(policy, report);
   } catch (error) {
     result = {
       verdict: 'BLOCK_DEPLOY',
@@ -136,7 +270,12 @@ export async function runImageGate(customPaths = {}) {
 }
 
 function parseArguments(arguments_) {
-  const aliases = { '--policy': 'policy', '--report': 'report', '--output': 'output' };
+  const aliases = {
+    '--policy': 'policy',
+    '--report': 'report',
+    '--output': 'output',
+    '--source': 'source'
+  };
   const paths = {};
 
   for (let index = 0; index < arguments_.length; index += 2) {

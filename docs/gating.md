@@ -54,19 +54,25 @@ language.
 
 ## Deploy gate
 
-The post-push deploy gate is deliberately separate from the pre-build security
-gate. `security/scripts/image-gate.mjs` evaluates the normalized ECR basic-scan
-report against the `image` policy section:
+`security/scripts/image-gate.mjs` runs in two places against the `image` policy:
+a **pre-push** scan on every PR (Trivy, `--source trivy`) and the **post-push**
+ECR basic scan on `main`. Both are separate from the pre-build security gate.
 
-- Critical or High produces `BLOCK_DEPLOY` and a non-zero exit.
-- Medium or Low is logged and deployment may continue.
-- A validated, complete report with zero blocking findings produces `DEPLOY`.
+- **Trivy pre-push (fix availability known)** mirrors the dependency model:
+  fixable Critical/High → `BLOCK_DEPLOY`; unfixable Critical/High → `EXCEPTION`
+  (verdict `DEPLOY-WITH-EXCEPTIONS`, exit 0) so an unpatchable upstream CVE does
+  not permanently block; Medium/Low → `LOG`. A secret baked into a layer, an
+  end-of-life OS, or an undetectable OS ("false clean") are **hard** BLOCKs —
+  integrity/credential issues, never "no fix available yet".
+- **ECR basic (no fix data reported)** falls back to severity-only: Critical or
+  High → `BLOCK_DEPLOY`; Medium/Low → `LOG`.
 - A missing, malformed, incomplete, unsupported, or internally inconsistent
-  report produces `BLOCK_DEPLOY`.
+  report produces `BLOCK_DEPLOY` in both.
 
 Both GitHub Actions and Jenkins call this same script. They do not translate
 its decision in YAML or Groovy, preventing policy and exit behavior from
-drifting apart.
+drifting apart. (An expiry/VEX suppression path for accepted `no_fix`
+exceptions — review D2 — is a planned follow-up.)
 
 ## GitHub branch protection
 
