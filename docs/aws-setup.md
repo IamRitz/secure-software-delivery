@@ -19,10 +19,14 @@ is available.
 1. Add the GitHub OIDC provider in IAM with URL
    `https://token.actions.githubusercontent.com` and audience
    `sts.amazonaws.com`.
-2. Create an IAM role for this repository. Its trust policy must require the
-   audience above and the exact `main` subject. This repository was created
-   after GitHub introduced immutable OIDC subjects, so use its permanent owner
-   and repository IDs:
+2. Create **three** IAM roles for this repository — one per credentialed job, so
+   no single role can both push an image and deploy it. The delivery sequence is
+   split into `ecr-push` → `image-scan` → `deploy-gate` → `deploy`, and each
+   credentialed job assumes its own role (`deploy-gate` assumes none — it only
+   evaluates the scan report). All three roles share the **same trust policy**
+   (audience above + the exact `main` subject); only their permission policies
+   differ. This repository was created after GitHub introduced immutable OIDC
+   subjects, so use its permanent owner and repository IDs:
 
 ```json
 {
@@ -48,30 +52,50 @@ the `sub` value; older repositories that have not opted into immutable
 subjects use `repo:IamRitz/secure-software-delivery:ref:refs/heads/main`.
 Never broaden this to all repositories or pull-request subjects.
 
-3. Attach a policy limited to this ECR repository and this EC2 instance. The
-   actions required by the current workflow are:
+3. Attach one **least-privilege** policy per role. Each is limited to this ECR
+   repository / this EC2 instance, and each job gets only what it needs:
+
+   **Push role** — assumed by the `ecr-push` job. ECR write only; no scan, no SSM:
 
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "ecr:GetAuthorizationToken",
-      "Resource": "*"
-    },
+    { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
     {
       "Effect": "Allow",
       "Action": [
         "ecr:BatchCheckLayerAvailability",
         "ecr:CompleteLayerUpload",
-        "ecr:DescribeImageScanFindings",
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
         "ecr:UploadLayerPart"
       ],
       "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery"
-    },
+    }
+  ]
+}
+```
+
+   **Scan role** — assumed by the `image-scan` job. Read scan findings only:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "ecr:DescribeImageScanFindings",
+    "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery"
+  }]
+}
+```
+
+   **Deploy role** — assumed by the `deploy` job. SSM only; **no ECR access at all**:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
     {
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
@@ -80,11 +104,7 @@ Never broaden this to all repositories or pull-request subjects.
         "arn:aws:ssm:<REGION>::document/AWS-RunShellScript"
       ]
     },
-    {
-      "Effect": "Allow",
-      "Action": "ssm:GetCommandInvocation",
-      "Resource": "*"
-    }
+    { "Effect": "Allow", "Action": "ssm:GetCommandInvocation", "Resource": "*" }
   ]
 }
 ```
@@ -92,15 +112,19 @@ Never broaden this to all repositories or pull-request subjects.
 `ssm:SendCommand` needs **both** the instance ARN and the `AWS-RunShellScript`
 document ARN. `ssm:GetCommandInvocation` cannot be scoped to the instance and
 must be granted on `*` — a hard-won detail: scoping it to the instance ARN
-silently denies the read-back and the deploy hangs then fails. The EC2
-instance's **own** role separately carries `AmazonSSMManagedInstanceCore` plus
-read-only ECR pull; the runner's push role is never shared with the box.
+silently denies the read-back and the deploy hangs then fails. The deploy role
+holds **no ECR permissions** — the EC2 instance pulls the image with its **own**
+role (`AmazonSSMManagedInstanceCore` + read-only ECR pull); no runner role,
+push or otherwise, is ever shared with the box. The `deploy-gate` job holds no
+AWS credentials whatsoever (it declares no `id-token` and assumes no role).
 
 4. Add these GitHub **repository variables**, not static AWS secrets:
 
 | Variable | Example |
 | --- | --- |
-| `AWS_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-main-delivery` |
+| `AWS_PUSH_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-ecr-push` |
+| `AWS_SCAN_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-image-scan` |
+| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-deploy` |
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `secure-software-delivery` |
 | `EC2_INSTANCE_ID` | `i-0123456789abcdef0` (the SSM deploy target) |
@@ -113,12 +137,16 @@ role, then `aws ssm send-command` runs `docker login`/`pull`/`run` on the instan
 **instance's own read-only ECR role**, so the runner's push credentials never
 reach the box, and **no inbound port (22 or otherwise) is required**.
 
-`aws-configuration` requires `AWS_ROLE_ARN`, `AWS_REGION`, `ECR_REPOSITORY`, and
-`EC2_INSTANCE_ID`; otherwise the AWS stages are skipped. The instance needs Docker,
-the AWS CLI, and the SSM agent, with `AmazonSSMManagedInstanceCore` on its role;
-the delivery/OIDC role needs `ssm:SendCommand` + `ssm:GetCommandInvocation` scoped
-to the instance. The Jenkins pipeline uses the same `ssm-deploy.mjs` script with an
-`EC2_INSTANCE_ID` parameter and the `jenkins-aws-deploy` credential.
+`aws-configuration` requires all three role ARNs (`AWS_PUSH_ROLE_ARN`,
+`AWS_SCAN_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`) plus `AWS_REGION`, `ECR_REPOSITORY`,
+and `EC2_INSTANCE_ID`; otherwise the AWS stages are skipped. The instance needs
+Docker, the AWS CLI, and the SSM agent, with `AmazonSSMManagedInstanceCore` on its
+role; the deploy role needs `ssm:SendCommand` + `ssm:GetCommandInvocation` scoped
+to the instance and holds no ECR access. The Jenkins pipeline uses the same
+`ssm-deploy.mjs` script with an `EC2_INSTANCE_ID` parameter and the
+`jenkins-aws-deploy` credential (Jenkins already splits ECR vs deploy into two
+credentials — the GitHub roles now match that separation, and add a third
+scan-only role).
 
 > **Port 22 is not used by CI.** SSM needs no inbound SSH. The SSM path is
 > verified, so the old `EC2_SSH_PRIVATE_KEY` secret has been deleted and port 22

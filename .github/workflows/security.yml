@@ -479,14 +479,19 @@ jobs:
     steps:
       - name: Detect AWS delivery configuration
         id: detect
+        # Least-privilege: three distinct OIDC roles, one per credentialed job
+        # (push / scan / deploy), instead of one broad role for the whole
+        # sequence. All must be present, or the AWS stages skip cleanly.
         env:
-          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          AWS_PUSH_ROLE_ARN: ${{ vars.AWS_PUSH_ROLE_ARN }}
+          AWS_SCAN_ROLE_ARN: ${{ vars.AWS_SCAN_ROLE_ARN }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
         run: |
           missing=()
-          for name in AWS_ROLE_ARN AWS_REGION ECR_REPOSITORY EC2_INSTANCE_ID; do
+          for name in AWS_PUSH_ROLE_ARN AWS_SCAN_ROLE_ARN AWS_DEPLOY_ROLE_ARN AWS_REGION ECR_REPOSITORY EC2_INSTANCE_ID; do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
@@ -499,11 +504,19 @@ jobs:
             echo "::notice::AWS not configured — ECR push, image scan, deploy gate, and deploy skipped; see docs/aws-setup.md. Missing: ${missing[*]}"
           fi
 
-  aws-delivery:
-    name: AWS delivery
-    # The push/deploy job. Explicitly gated on a passing security-gate as well as
-    # the parallel build and AWS configuration — a BLOCK leaves security-gate not
-    # 'success', so this job is skipped and nothing is ever pushed or deployed.
+  # The delivery sequence is split into four visibly-named jobs so the two-gate
+  # architecture is legible in the Actions graph, each with least-privilege
+  # credentials rather than one broad role:
+  #   ecr-push (ECR write) -> image-scan (scan-findings read) ->
+  #   deploy-gate (no creds) -> deploy (SSM only)
+  # Fail-closed by construction: each job `needs` the previous, so a failed
+  # deploy-gate (BLOCK_DEPLOY) means the deploy job is SKIPPED and never starts.
+
+  ecr-push:
+    name: ECR push
+    # Gated on a passing security-gate + the parallel build + AWS config. A BLOCK
+    # leaves security-gate not 'success', so this job and everything after it is
+    # skipped — nothing is pushed.
     needs:
       - security-gate
       - container-build
@@ -515,19 +528,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-
+    outputs:
+      registry: ${{ steps.ecr-login.outputs.registry }}
     steps:
-      - name: Check out delivery scripts and policy
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.23.2'
-          package-manager-cache: false
-
       - name: Download credential-free image build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -536,12 +539,12 @@ jobs:
       - name: Load application image
         run: gunzip --stdout application-image.tar.gz | docker load
 
-      - name: Assume scoped AWS role with GitHub OIDC
+      - name: Assume the ECR push role (ECR write only)
         uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_PUSH_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: secure-software-delivery
+          role-session-name: ssd-ecr-push
 
       - name: Log in to Amazon ECR
         id: ecr-login
@@ -558,39 +561,142 @@ jobs:
           docker push "$target:$GITHUB_SHA"
           docker push "$target:demo"
 
+  image-scan:
+    name: Image scan
+    # Reads the scan-on-push findings only (ecr:DescribeImageScanFindings). No
+    # ECR write, no SSM. Always uploads a report so the deploy gate can render a
+    # truthful verdict even if the poll failed.
+    needs:
+      - ecr-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out scan script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Assume the ECR scan role (scan-findings read only)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_SCAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ssd-image-scan
+
       - name: Poll ECR image scan
         continue-on-error: true
         env:
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
+          mkdir -p reports
           node security/scripts/poll-ecr-scan.mjs \
             --repository "$ECR_REPOSITORY" \
             --image-tag "$GITHUB_SHA" \
             --region "$AWS_REGION" \
             --output reports/ecr-image-scan.json
+          # Guarantee the artifact exists even on a poll failure, so the deploy
+          # gate runs image-gate.mjs and fail-closes to BLOCK_DEPLOY on the empty
+          # report rather than erroring on a missing artifact.
+          [ -s reports/ecr-image-scan.json ] || printf '' > reports/ecr-image-scan.json
 
-      - name: Evaluate deploy policy
-        run: node security/scripts/image-gate.mjs
-
-      - name: Upload image scan and deploy-gate reports
+      - name: Upload raw image scan report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: image-security-results
-          path: |
-            reports/ecr-image-scan.json
-            reports/image-gate.json
+          name: ecr-image-scan
+          path: reports/ecr-image-scan.json
           if-no-files-found: warn
           retention-days: 14
 
+  deploy-gate:
+    name: Deploy gate
+    # The image gate — holds NO cloud credentials (no id-token). It only reads the
+    # scan report and evaluates policy. A Critical/High finding, or a missing or
+    # malformed report, makes image-gate.mjs exit non-zero -> this job FAILS ->
+    # the deploy job (which needs it) is skipped and never starts.
+    needs:
+      - image-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out gate script and policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Download raw image scan report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ecr-image-scan
+          path: reports
+
+      - name: Evaluate deploy policy (fail-closed)
+        run: node security/scripts/image-gate.mjs
+
+      - name: Upload deploy-gate report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-gate-result
+          path: reports/image-gate.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  deploy:
+    name: Deploy
+    # Runs only when deploy-gate SUCCEEDED (gate passed). Because `deploy` needs
+    # `deploy-gate`, a failed gate skips this job entirely — it never starts, so a
+    # Critical/High image finding can never reach a deploy. Holds SSM permissions
+    # only (ssm:SendCommand + ssm:GetCommandInvocation); no ECR access.
+    needs:
+      - deploy-gate
+      - ecr-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out deploy script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Assume the SSM deploy role (SSM only)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ssd-deploy
+
       - name: Deploy approved image to EC2 via SSM
         # No SSH, no inbound port: SSM SendCommand runs the deploy on the instance,
-        # which pulls from ECR with its own read-only role. Uses the OIDC role's
-        # ssm:SendCommand + ssm:GetCommandInvocation already in the job env.
+        # which pulls from ECR with its OWN read-only role — the deploy role holds
+        # no ECR access at all.
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
-          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REGISTRY: ${{ needs.ecr-push.outputs.registry }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
           EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '3000' }}

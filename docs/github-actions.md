@@ -47,20 +47,33 @@ than after them. It has only `contents: read`, holds no AWS credentials, builds
 the Dockerfile (with a `type=gha` layer cache so an unchanged `npm ci` layer is
 restored instead of rebuilt), and uploads the image as a one-day artifact.
 Because it holds no credentials it does not wait for the gate; the credential
-boundary is enforced on the jobs that follow. `aws-configuration` and
-`aws-delivery` both require `needs.security-gate.result == 'success'`, so on a
-BLOCK the parallel image is built but never pushed or deployed — a wasted
-build, never an unsafe one. `aws-configuration` checks the required repository
-variables; if any are absent, it emits an explicit notice and `aws-delivery`
-shows as skipped.
+boundary is enforced on the jobs that follow. `aws-configuration` and the
+delivery jobs require `needs.security-gate.result == 'success'`, so on a BLOCK
+the parallel image is built but never pushed or deployed — a wasted build, never
+an unsafe one. `aws-configuration` checks the required repository variables; if
+any are absent, it emits an explicit notice and the delivery jobs show as
+skipped.
 
-`aws-delivery` is the only job with `id-token: write`. It downloads the
-already-built image before obtaining a short-lived AWS identity through OIDC,
-then performs ECR push, image scan, the fail-closed deploy gate, and the EC2
-deploy over AWS Systems Manager (`ssm-deploy.mjs` — no SSH, no inbound port).
-This artifact handoff is intentional: Docker's `npm ci` build
-layer never runs while AWS credentials are present. No workflow-level AWS
-permission or static AWS access key is used. See `docs/aws-setup.md`.
+Delivery is split into four visibly-named jobs so the two-gate architecture is
+legible in the Actions graph and each holds least-privilege credentials, rather
+than one broad role for the whole sequence:
+
+`ecr-push` → `image-scan` → `deploy-gate` → `deploy`
+
+- `ecr-push` assumes the **push** role (ECR write only), loads the credential-free
+  image artifact, and pushes the immutable + `demo` tags.
+- `image-scan` assumes the **scan** role (`ecr:DescribeImageScanFindings` only),
+  polls the scan-on-push result, and always uploads a report artifact.
+- `deploy-gate` holds **no cloud credentials** (no `id-token`, no role): it only
+  runs `image-gate.mjs` against the scan report. A Critical/High finding, or a
+  missing/malformed report, makes it exit non-zero and the job **fails**.
+- `deploy` assumes the **deploy** role (SSM only, no ECR) and runs the EC2/SSM
+  deploy (`ssm-deploy.mjs` — no SSH, no inbound port).
+
+Each job `needs` the previous, so a failed `deploy-gate` **skips** the `deploy`
+job entirely — it never starts, which is a stronger guarantee than an in-job
+early exit. No workflow-level AWS permission or static AWS access key is used;
+three scoped OIDC roles replace the former single role (see `docs/aws-setup.md`).
 
 Third-party actions are pinned to full commit SHAs rather than movable tags.
 The adjacent version comments retain readability while the immutable reference
