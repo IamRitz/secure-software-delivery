@@ -41,46 +41,47 @@ advisories published for already-locked dependencies and refreshes the SAST
 report without pointlessly scheduling the standalone application workflow.
 
 `container-build` runs on **every** event except the weekly schedule —
-including pull requests — because it also **scans the built image with Trivy
-before merge**. It has only `contents: read`, holds no AWS credentials, builds
-the Dockerfile, `docker save`s a tarball, and scans it with a digest-pinned Trivy
-(`--input`, no Docker socket mounted; see `security/trivy-provenance.md`). A
-digest-pinned Trivy plus `image-gate.mjs --source trivy` is the **pre-push image
-gate**: a Critical/High CVE, a baked-in secret, an undetectable OS ("false
-clean") or an end-of-life OS fails the check on the PR, not after merge. Trivy
-runs with `--exit-code 0` — the reviewed gate decides, never the scanner.
+including pull requests. It has only `contents: read`, holds no AWS credentials,
+builds the Dockerfile, `docker save`s a tarball, and uploads it as an artifact.
+The Trivy scan is a **separate, visibly-named job**, `image-scan-prepush`, so it
+appears as its own node in the Actions graph rather than hiding inside the build.
+That job (also no credentials) downloads the tarball, scans it with a
+digest-pinned Trivy (`--input`, no Docker socket mounted; see
+`security/trivy-provenance.md`), and runs `image-gate.mjs --source trivy` as the
+**pre-push image gate**: a Critical/High-with-fix CVE, a baked-in secret, an
+undetectable OS ("false clean") or an end-of-life OS fails the check on the PR,
+not after merge. Trivy runs with `--exit-code 0` — the reviewed gate decides.
 
-Because container-build now runs on PRs, it no longer implicitly keeps the AWS
-jobs off PRs. `aws-configuration` and `ecr-push` therefore carry an **explicit** guard —
-`(push || workflow_dispatch) && ref == refs/heads/main` — and the OIDC trust
-policies pin `sub` to `refs/heads/main`. `workflow_dispatch` is included because
-it is manually triggered and sits in the same trust tier as merge access; the
-security property that matters is that **`pull_request` is excluded**, so a PR
-assumes no AWS role and reaches no delivery job (they `need` `ecr-push`, which is
-skipped on a PR). The image artifact is uploaded only on `main`. On a BLOCK the image is
-still built and scanned but never pushed or deployed — a wasted build, never an
-unsafe one.
+Because container-build and the scan run on PRs, they no longer implicitly keep
+the AWS jobs off PRs. `aws-configuration` and `push-and-scan` therefore carry an
+**explicit** guard — `(push || workflow_dispatch) && ref == refs/heads/main` —
+and the OIDC trust policies pin `sub` to `refs/heads/main`. `workflow_dispatch`
+is included because it is manually triggered and sits in the same trust tier as
+merge access; the property that matters is that **`pull_request` is excluded**,
+so a PR assumes no AWS role and reaches no delivery job (they `need`
+`push-and-scan`, which is skipped on a PR). On a BLOCK the image is still built
+and scanned but never pushed or deployed — a wasted build, never an unsafe one.
 
-Delivery is split into four visibly-named jobs so the two-gate architecture is
-legible in the Actions graph and each holds least-privilege credentials, rather
-than one broad role for the whole sequence:
+Delivery is three visibly-named jobs holding **two** OIDC roles:
 
-`ecr-push` → `image-scan` → `deploy-gate` → `deploy`
+`push-and-scan` → `deploy-gate` → `deploy`
 
-- `ecr-push` assumes the **push** role (ECR write only), loads the credential-free
-  image artifact, and pushes the immutable + `demo` tags.
-- `image-scan` assumes the **scan** role (`ecr:DescribeImageScanFindings` only),
-  polls the scan-on-push result, and always uploads a report artifact.
+- `push-and-scan` assumes the **push+scan** role (ECR write + scan-findings read
+  on this repo — both are registry operations). It asserts the loaded artifact's
+  config digest equals what Trivy scanned, pushes the immutable + `demo` tags,
+  then polls the ECR scan-on-push result by digest and uploads it. It also
+  `needs` `image-scan-prepush`, so a failed pre-push gate skips the push.
 - `deploy-gate` holds **no cloud credentials** (no `id-token`, no role): it only
-  runs `image-gate.mjs` against the scan report. A Critical/High finding, or a
-  missing/malformed report, makes it exit non-zero and the job **fails**.
+  runs `image-gate.mjs` against the ECR scan report. A Critical/High finding, or
+  a missing/malformed report, makes it exit non-zero and the job **fails**.
 - `deploy` assumes the **deploy** role (SSM only, no ECR) and runs the EC2/SSM
   deploy (`ssm-deploy.mjs` — no SSH, no inbound port).
 
 Each job `needs` the previous, so a failed `deploy-gate` **skips** the `deploy`
-job entirely — it never starts, which is a stronger guarantee than an in-job
-early exit. No workflow-level AWS permission or static AWS access key is used;
-three scoped OIDC roles replace the former single role (see `docs/aws-setup.md`).
+job entirely — it never starts, a stronger guarantee than an in-job early exit.
+No workflow-level AWS permission or static AWS access key is used. Two scoped
+OIDC roles (push+scan, deploy) keep the registry credentials separate from the
+credentials that reach the instance (see `docs/aws-setup.md`).
 
 Third-party actions are pinned to full commit SHAs rather than movable tags.
 The adjacent version comments retain readability while the immutable reference
