@@ -525,6 +525,80 @@ describe('dispatch: resilience when a remote surface fails on a BLOCK', () => {
   });
 });
 
+describe('upsertPrComment: clean-run update-only behaviour', () => {
+  it('does NOT create a comment on a clean run when none exists (updateOnly)', async () => {
+    const calls = [];
+    const fetchImpl = async (url, options = {}) => {
+      calls.push({ url, method: options.method || 'GET' });
+      if (url.includes('/comments') && options.method === undefined) {
+        return { ok: true, json: async () => [] }; // no existing comment
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+    const result = await upsertPrComment({
+      repository: 'acme/widgets',
+      prNumber: 41,
+      token: 'gh',
+      body: `clean\n${PR_COMMENT_MARKER}`,
+      updateOnly: true,
+      fetchImpl
+    });
+    assert.equal(result.skipped, true);
+    assert.ok(!calls.some((c) => c.method === 'POST'));
+  });
+
+  it('DOES flip an existing red comment to green on a clean run (updateOnly)', async () => {
+    const calls = [];
+    const fetchImpl = async (url, options = {}) => {
+      calls.push({ url, method: options.method || 'GET' });
+      if (url.includes('/comments') && options.method === undefined) {
+        return { ok: true, json: async () => [{ id: 9, body: `⛔ BLOCK\n${PR_COMMENT_MARKER}` }] };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+    const result = await upsertPrComment({
+      repository: 'acme/widgets',
+      prNumber: 41,
+      token: 'gh',
+      body: `✅ DEPLOY\n${PR_COMMENT_MARKER}`,
+      updateOnly: true,
+      fetchImpl
+    });
+    assert.deepEqual(result, { updated: true, id: 9 });
+    assert.ok(calls.some((c) => c.method === 'PATCH' && c.url.includes('/comments/9')));
+  });
+});
+
+describe('dispatch: a clean DEPLOY posts no new PR comment but still writes the summary', () => {
+  it('skips creating a PR comment when the run is clean and none exists', async () => {
+    const cleanGate = { verdict: 'DEPLOY', findings: [] };
+    const appended = [];
+    const calls = [];
+    const fetchImpl = async (url, options = {}) => {
+      calls.push({ url, method: options.method || 'GET' });
+      if (url.includes('/comments') && options.method === undefined) {
+        return { ok: true, json: async () => [] };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+    const performed = await dispatch({
+      gate: cleanGate,
+      context: CONTEXT,
+      slackUrl: 'https://slack.example/hook',
+      token: 'gh-token',
+      summaryPath: '/tmp/summary',
+      fetchImpl,
+      appendImpl: async (_p, d) => appended.push(d),
+      logger: { log() {}, error() {} }
+    });
+    assert.equal(performed.prComment, false); // nothing created
+    assert.equal(performed.summary, true); // summary still written
+    assert.equal(performed.slack, false); // clean -> no ping
+    assert.ok(!calls.some((c) => c.method === 'POST'));
+    assert.match(appended[0], /Security gate: DEPLOY/);
+  });
+});
+
 // --- scale: a repo-sized finding count stays readable ------------------------
 
 describe('format-findings: repo-scale finding count renders readably', () => {
