@@ -19,15 +19,17 @@ is available.
 The thing Trivy scanned, the thing ECR scanned, and the thing EC2 runs are bound
 to a single immutable digest so a mutable tag can never be swapped in between:
 
-1. **build → scan:** `container-build` records Trivy's `Metadata.ImageID` (the
+1. **build → scan:** `image-scan-prepush` records Trivy's `Metadata.ImageID` (the
    image config digest) as a job output.
-2. **build → push:** `ecr-push` asserts the loaded artifact's `docker inspect .Id`
-   equals that ImageID before pushing, then records the pushed **manifest digest**.
-3. **push → scan:** `image-scan` polls ECR `--image-digest <that manifest digest>`;
-   `poll-ecr-scan.mjs` asserts ECR scanned exactly that digest.
+2. **scan → push:** `push-and-scan` asserts the loaded artifact's
+   `docker inspect .Id` equals that ImageID before pushing, then records the
+   pushed **manifest digest**.
+3. **push → ECR scan:** the same `push-and-scan` job polls ECR
+   `--image-digest <that manifest digest>`; `poll-ecr-scan.mjs` asserts ECR
+   scanned exactly that digest.
 4. **scan → gate:** `deploy-gate` re-asserts the report's digest equals the pushed
    digest before running `image-gate.mjs`.
-5. **scan → deploy:** `deploy` runs `ssm-deploy.mjs --image-digest`, so the
+5. **gate → deploy:** `deploy` runs `ssm-deploy.mjs --image-digest`, so the
    instance `docker pull`s `registry/repo@sha256:…`, never a tag.
 
 ## GitHub Actions: OIDC, not access keys
@@ -35,14 +37,16 @@ to a single immutable digest so a mutable tag can never be swapped in between:
 1. Add the GitHub OIDC provider in IAM with URL
    `https://token.actions.githubusercontent.com` and audience
    `sts.amazonaws.com`.
-2. Create **three** IAM roles for this repository — one per credentialed job, so
-   no single role can both push an image and deploy it. The delivery sequence is
-   split into `ecr-push` → `image-scan` → `deploy-gate` → `deploy`, and each
-   credentialed job assumes its own role (`deploy-gate` assumes none — it only
-   evaluates the scan report). All three roles share the **same trust policy**
-   (audience above + the exact `main` subject); only their permission policies
-   differ. This repository was created after GitHub introduced immutable OIDC
-   subjects, so use its permanent owner and repository IDs:
+2. Create **two** IAM roles for this repository. ECR push and the ECR
+   scan-findings read are both registry operations on the same repository, so
+   they share one role (`push-and-scan`); the SSM **deploy** role — the
+   credentials that can reach the instance — stays separate, which is the
+   boundary that matters. No single role can both push an image and deploy it.
+   The `image-scan-prepush` and `deploy-gate` jobs assume no role at all (they
+   only scan a tarball / evaluate a report). Both roles share the **same trust
+   policy** (audience above + the exact `main` subject); only their permission
+   policies differ. This repository was created after GitHub introduced immutable
+   OIDC subjects, so use its permanent owner and repository IDs:
 
 ```json
 {
@@ -71,7 +75,8 @@ Never broaden this to all repositories or pull-request subjects.
 3. Attach one **least-privilege** policy per role. Each is limited to this ECR
    repository / this EC2 instance, and each job gets only what it needs:
 
-   **Push role** — assumed by the `ecr-push` job. ECR write only; no scan, no SSM:
+   **Push+scan role** — assumed by the `push-and-scan` job. ECR write **and**
+   scan-findings read on this repo; no SSM:
 
 ```json
 {
@@ -85,24 +90,12 @@ Never broaden this to all repositories or pull-request subjects.
         "ecr:CompleteLayerUpload",
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
-        "ecr:UploadLayerPart"
+        "ecr:UploadLayerPart",
+        "ecr:DescribeImageScanFindings"
       ],
       "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery"
     }
   ]
-}
-```
-
-   **Scan role** — assumed by the `image-scan` job. Read scan findings only:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "ecr:DescribeImageScanFindings",
-    "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery"
-  }]
 }
 ```
 
@@ -138,8 +131,7 @@ AWS credentials whatsoever (it declares no `id-token` and assumes no role).
 
 | Variable | Example |
 | --- | --- |
-| `AWS_PUSH_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-ecr-push` |
-| `AWS_SCAN_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-image-scan` |
+| `AWS_PUSH_SCAN_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-ecr-push-scan` |
 | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::123456789012:role/ssd-deploy` |
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REPOSITORY` | `secure-software-delivery` |
@@ -153,9 +145,9 @@ role, then `aws ssm send-command` runs `docker login`/`pull`/`run` on the instan
 **instance's own read-only ECR role**, so the runner's push credentials never
 reach the box, and **no inbound port (22 or otherwise) is required**.
 
-`aws-configuration` requires all three role ARNs (`AWS_PUSH_ROLE_ARN`,
-`AWS_SCAN_ROLE_ARN`, `AWS_DEPLOY_ROLE_ARN`) plus `AWS_REGION`, `ECR_REPOSITORY`,
-and `EC2_INSTANCE_ID`; otherwise the AWS stages are skipped. The instance needs
+`aws-configuration` requires both role ARNs (`AWS_PUSH_SCAN_ROLE_ARN`,
+`AWS_DEPLOY_ROLE_ARN`) plus `AWS_REGION`, `ECR_REPOSITORY`, and
+`EC2_INSTANCE_ID`; otherwise the AWS stages are skipped. The instance needs
 Docker, the AWS CLI, and the SSM agent, with `AmazonSSMManagedInstanceCore` on its
 role; the deploy role needs `ssm:SendCommand` + `ssm:GetCommandInvocation` scoped
 to the instance and holds no ECR access. The Jenkins pipeline uses the same

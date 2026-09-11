@@ -190,7 +190,17 @@ function evaluateTrivy(policy, report) {
         fixAvailable,
         action: policyAction(policy, policyRule),
         policyRule,
-        reason: `${severity} image finding; fix ${fixAvailable ? 'available' : 'not available'}`
+        reason: `${severity} image finding; fix ${fixAvailable ? 'available' : 'not available'}`,
+        // Optional human context (CVE title/description, fixed version, link) for
+        // the developer-readable formatter; omitted when Trivy did not provide it.
+        ...(fixAvailable ? { fixedVersion: vulnerability.FixedVersion } : {}),
+        ...(typeof vulnerability.Title === 'string' && vulnerability.Title !== ''
+          ? { title: vulnerability.Title }
+          : {}),
+        ...(typeof vulnerability.Description === 'string' && vulnerability.Description !== ''
+          ? { description: vulnerability.Description }
+          : {}),
+        ...(typeof vulnerability.PrimaryURL === 'string' ? { url: vulnerability.PrimaryURL } : {})
       });
     }
     // Secrets baked into layers (e.g. an .npmrc token) are a hard BLOCK and are

@@ -260,13 +260,26 @@ function evaluateNpmAudit(policy, report, findings) {
       : '';
     const policyRule = `dependencies.${severity}${suffix}`;
 
+    // Optional human context: the fixed version npm suggests, and the advisory
+    // title/url when `via` carries advisory objects (not just package names).
+    const advisory = Array.isArray(vulnerability.via)
+      ? vulnerability.via.find((entry) => entry && typeof entry === 'object')
+      : undefined;
+    const fixedVersion =
+      vulnerability.fixAvailable && typeof vulnerability.fixAvailable === 'object'
+        ? vulnerability.fixAvailable.version
+        : undefined;
+
     addFinding(findings, policy, {
       source: 'npm-audit',
       id: packageName,
       severity,
       fixAvailable,
       policyRule,
-      reason: `${severity} npm advisory; fix ${fixAvailable ? 'available' : 'not available'}`
+      reason: `${severity} npm advisory; fix ${fixAvailable ? 'available' : 'not available'}`,
+      ...(typeof fixedVersion === 'string' ? { fixedVersion } : {}),
+      ...(advisory?.title ? { title: advisory.title } : {}),
+      ...(advisory?.url ? { url: advisory.url } : {})
     });
   }
 }
@@ -489,6 +502,9 @@ function evaluateOsv(policy, report, findings) {
         const suffix = ['critical', 'high'].includes(severity)
           ? `_${fixAvailable ? 'with_fix' : 'no_fix'}`
           : '';
+        const referenceUrl = Array.isArray(vulnerability.references)
+          ? vulnerability.references.find((entry) => typeof entry?.url === 'string')?.url
+          : undefined;
         addFinding(findings, policy, {
           source: 'osv-scanner',
           id: vulnerability.id,
@@ -499,7 +515,10 @@ function evaluateOsv(policy, report, findings) {
           policyRule: `dependencies.${severity}${suffix}`,
           reason: `${severity} OSV advisory (${
             score === null ? 'no CVSS score; treated as high' : `CVSS ${score}`
-          }); fix ${fixAvailable ? 'available' : 'not available'}`
+          }); fix ${fixAvailable ? 'available' : 'not available'}`,
+          // Optional human context for the formatter.
+          ...(typeof vulnerability.summary === 'string' ? { summary: vulnerability.summary } : {}),
+          ...(typeof referenceUrl === 'string' ? { url: referenceUrl } : {})
         });
       }
     }
@@ -563,7 +582,15 @@ function evaluateSemgrep(policy, report, baseline, findings) {
       severity,
       baselineState: existing ? 'existing' : 'new',
       policyRule: `sast.${severity}${suffix}`,
-      reason: `${severity} Semgrep finding is ${existing ? 'baseline-known' : 'new'}`
+      reason: `${severity} Semgrep finding is ${existing ? 'baseline-known' : 'new'}`,
+      // Human context for the developer-readable formatter (Semgrep rules carry a
+      // `message`); optional, so a minimal report still evaluates.
+      ...(typeof finding.extra?.message === 'string' && finding.extra.message !== ''
+        ? { message: finding.extra.message }
+        : {}),
+      ...(typeof finding.extra?.metadata?.references?.[0] === 'string'
+        ? { url: finding.extra.metadata.references[0] }
+        : {})
     });
   }
 }
