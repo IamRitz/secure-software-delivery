@@ -29,7 +29,19 @@ export async function writeStepSummary(markdown, { summaryPath, appendImpl = app
 
 // Find-by-marker then update, so repeated pushes update one comment instead of
 // stacking walls of findings on the PR.
-export async function upsertPrComment({ repository, prNumber, token, body, fetchImpl = globalThis.fetch }) {
+//
+// `updateOnly` (used for a clean run): update an existing findings comment —
+// e.g. flip an earlier ⛔ BLOCK to ✅ once fixed — but do NOT create a new one.
+// A PR that was always clean then gets no status comment at all, rather than a
+// "No findings" comment nobody needed.
+export async function upsertPrComment({
+  repository,
+  prNumber,
+  token,
+  body,
+  updateOnly = false,
+  fetchImpl = globalThis.fetch
+}) {
   if (!repository || !prNumber || !token) {
     return { skipped: true, reason: 'missing repository, prNumber or token' };
   }
@@ -63,6 +75,11 @@ export async function upsertPrComment({ repository, prNumber, token, body, fetch
       throw new Error(`updating PR comment failed: HTTP ${patch.status}`);
     }
     return { updated: true, id: existing.id };
+  }
+
+  if (updateOnly) {
+    // Clean run and no prior findings comment to resolve — post nothing.
+    return { skipped: true, reason: 'clean run with no existing comment to update' };
   }
 
   const create = await fetchImpl(api, {
@@ -129,6 +146,12 @@ export async function dispatch({
 
   // 2. PR comment and 3. Slack are independent: a failure in one never suppresses
   //    the other, and neither can suppress the summary already written above.
+  // A clean run has nothing actionable to report (no blocking, exception, or
+  // integrity findings). We still update an existing comment — to flip a prior
+  // red one to green — but we do not create a new comment just to say "clean".
+  const clean =
+    report.counts.block === 0 && report.counts.exception === 0 && report.counts.integrity === 0;
+
   if (routing.prComment) {
     try {
       const result = await upsertPrComment({
@@ -136,6 +159,7 @@ export async function dispatch({
         prNumber: context.prNumber,
         token,
         body: renderMarkdown(report, { includeMarker: true }),
+        updateOnly: clean,
         fetchImpl
       });
       performed.prComment = !result.skipped;
