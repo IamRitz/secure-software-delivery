@@ -1,6 +1,12 @@
 name: Security checks
 
 on:
+  # SECURITY: keep this `pull_request` — never `pull_request_target`. The
+  # developer-readable notifier holds `pull-requests: write`; on the
+  # `pull_request` event GitHub forces the GITHUB_TOKEN read-only for fork PRs
+  # and withholds other secrets, so untrusted fork code cannot write a PR comment
+  # or read the Slack URL. `pull_request_target` would run with a writable token
+  # against fork code and break that guarantee.
   pull_request:
     branches:
       - main
@@ -311,6 +317,12 @@ jobs:
       - sast
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Scoped to THIS job only: the developer-readable notifier updates one PR
+      # comment (find-by-marker) with the full finding detail. No other job is
+      # granted PR write.
+      pull-requests: write
 
     steps:
       - name: Check out gate policy and evaluator
@@ -403,6 +415,20 @@ jobs:
           BREAK_GLASS_TIMEOUT_SECONDS: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
         run: node security/scripts/break-glass-poll.mjs
 
+      - name: Post developer-readable findings (Slack + PR comment + job summary)
+        # Feedback only — never fails the gate (the gate's own verdict decides the
+        # job result). Routing: BLOCK -> Slack + PR + summary; EXCEPTION -> PR +
+        # summary; break-glass eligible -> no plain ping (the interactive request
+        # owns Slack); gate_mode=log-only -> no Slack at all.
+        if: always()
+        continue-on-error: true
+        env:
+          GATE_MODE: ${{ vars.GATE_MODE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.break_glass_pr_number }}
+          SECURITY_NOTIFY_SLACK_URL: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+        run: node security/scripts/notify.mjs --gate reports/security-gate.json
+
       - name: Upload security gate decision
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -474,6 +500,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Scoped to this job: the pre-push image findings update the same PR comment.
+      pull-requests: write
     outputs:
       # Trivy's Metadata.ImageID (image config digest) — anchor of the
       # build -> push -> scan -> deploy digest chain (see docs/aws-setup.md).
@@ -525,6 +553,16 @@ jobs:
           --source trivy
           --report reports/trivy-image.json
           --output reports/image-gate-prepush.json
+
+      - name: Post developer-readable image findings (PR comment + summary; Slack on BLOCK_DEPLOY)
+        if: always()
+        continue-on-error: true
+        env:
+          GATE_MODE: ${{ vars.GATE_MODE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SECURITY_NOTIFY_SLACK_URL: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+        run: node security/scripts/notify.mjs --gate reports/image-gate-prepush.json
 
       - name: Upload Trivy + pre-push gate reports
         if: always()
@@ -744,6 +782,17 @@ jobs:
 
       - name: Evaluate deploy policy (fail-closed)
         run: node security/scripts/image-gate.mjs
+
+      - name: Post developer-readable deploy-gate findings (Slack + summary)
+        # Post-push, on main only — no PR to comment on, so this surfaces the job
+        # summary and (on BLOCK_DEPLOY) a Slack alert. Feedback only.
+        if: always()
+        continue-on-error: true
+        env:
+          GATE_MODE: ${{ vars.GATE_MODE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SECURITY_NOTIFY_SLACK_URL: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+        run: node security/scripts/notify.mjs --gate reports/image-gate.json
 
       - name: Upload deploy-gate report
         if: always()
