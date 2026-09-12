@@ -608,6 +608,33 @@ export function isBreakGlassEligibleFinding(finding) {
   return finding.action === 'BLOCK' && finding.breakGlassEligible === true;
 }
 
+// A report-integrity failure means a scanner could not interpret its input: a
+// missing or malformed report, a Trivy scan that could not identify the base
+// image OS, an end-of-life OS with no advisories. The findings list is then not
+// "clean", it is UNKNOWN.
+//
+// The verdict alone cannot carry this: in `log-only` mode a BLOCK deliberately
+// does not fail the job, so anything downstream reading only the verdict would
+// treat an untrustworthy scan as an acceptable one. Baselining from such a run
+// would bake "no findings" in as the permanently accepted state. Every gate
+// result therefore carries this machine-readable flag, and
+// generate-semgrep-baseline.mjs refuses to run when it is false.
+export function summarizeIntegrity(findings) {
+  const failures = findings.filter(
+    (finding) =>
+      finding.id === 'report-integrity' ||
+      (typeof finding.policyRule === 'string' && finding.policyRule.endsWith('report_integrity'))
+  );
+
+  return {
+    trusted: failures.length === 0,
+    failures: failures.map((finding) => ({
+      source: finding.source,
+      reason: finding.reason
+    }))
+  };
+}
+
 function markBreakGlassEligibility(policy, findings) {
   for (const finding of findings) {
     let policyPath;
@@ -709,6 +736,7 @@ export async function runSecurityGate(customPaths = {}) {
     result = {
       verdict,
       summary,
+      integrity: summarizeIntegrity(findings),
       findings,
       breakGlass: breakGlassSummary(verdict, findings)
     };
@@ -724,6 +752,7 @@ export async function runSecurityGate(customPaths = {}) {
     result = {
       verdict: 'BLOCK',
       summary: { block: 1, exception: 0, log: 0 },
+      integrity: summarizeIntegrity([finding]),
       findings: [finding],
       breakGlass: breakGlassSummary('BLOCK', [finding])
     };

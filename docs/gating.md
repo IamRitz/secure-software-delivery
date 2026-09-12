@@ -91,7 +91,12 @@ follows using a repository administrator account:
 
 Both checks are safe to require because each fires on **every** pull request to
 `main`: `Application checks` (`ci.yml`) has no `paths` filter or conditional
-job, and `security-gate` runs via `if: always()`. A required check whose
+job, and `security-gate` runs via `if: always()`. Since the workflow split,
+`security-gate` is a thin job in `security.yml` that republishes the verdict of
+`_source-security.yml`'s `source-gate` job — GitHub would otherwise report that
+job as `source-security / source-gate` and the rule above would match nothing,
+silently ceasing to gate merges. `test/workflow-contracts.test.js` asserts the
+name still exists. A required check whose
 workflow can be *skipped* for some PRs (for example a `paths`-filtered workflow
 on a PR that touches no matching files) would leave those PRs permanently
 blocked on "Waiting for status to be reported" — neither of these can, because
@@ -130,7 +135,8 @@ client checks eligibility before its n8n shared-secret credential is loaded,
 so hard blocks never invoke the notification endpoint.
 
 For an eligible BLOCK, CI authenticates to n8n Webhook A, then polls Webhook C.
-Only an `approved` decision makes the existing `security-gate` job successful.
+Only an `approved` decision makes the `source-gate` job (and therefore the
+`security-gate` check) successful.
 Denied, expired, malformed, unreachable, or timed-out decisions remain failed.
 
 ### Slack path (active) — n8n webhooks and CI variables

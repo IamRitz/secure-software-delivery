@@ -1,0 +1,34 @@
+# Security-owned paths.
+#
+# WHY THIS EXISTS NOW RATHER THAN AT CENTRALIZATION
+#
+# `gate_mode: log-only` makes the gate genuinely non-blocking — including for
+# report-integrity failures. The caller workflows are app-team-owned and edited
+# through ordinary pull requests, so without this file a one-line change to
+# `.github/workflows/security.yml` turns a red required check green, reviewed by
+# whoever normally reviews that repo's code. That is an unreviewed path to
+# bypassing the repo's own security gate.
+#
+# These paths therefore require review from the security owner:
+#   - the callers, where `gate_mode` and the reusable-workflow references live
+#   - the reusable workflows themselves
+#   - the policy, the gate scripts, and the committed Semgrep baseline
+#
+# THIS FILE ALONE ENFORCES NOTHING. CODEOWNERS is advisory until branch
+# protection on `main` enables "Require review from Code Owners" (and a review
+# count of at least 1). See docs/onboarding.md § "Who can turn the gate off".
+
+# Everything CI executes.
+/.github/workflows/   @IamRitz
+/.github/CODEOWNERS   @IamRitz
+
+# The policy the gate enforces, the code that enforces it, and the accepted-
+# findings baseline it measures against.
+/security/policy.yaml        @IamRitz
+/security/scripts/           @IamRitz
+/security/baseline/          @IamRitz
+/security/semgrep-rules.yml  @IamRitz
+
+# In a real org these would be a team (e.g. @your-org/security-engineering)
+# rather than an individual, so review does not depend on one person's
+# availability.

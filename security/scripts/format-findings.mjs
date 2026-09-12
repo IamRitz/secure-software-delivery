@@ -38,16 +38,46 @@ const VERDICTS = {
   BLOCK_DEPLOY: { emoji: '⛔', label: 'BLOCK_DEPLOY', blurb: 'Blocking image findings must be resolved before deploy.' }
 };
 
-const MAKE_TARGET = {
-  gitleaks: 'make secrets',
-  trufflehog: 'make secrets',
-  'npm-audit': 'make dependencies',
-  'pip-audit': 'make dependencies',
-  'osv-scanner': 'make dependencies',
-  semgrep: 'make sast',
-  trivy: 'make image-gate',
-  'ecr-image-scan': 'make image-gate'
+// How a developer reproduces a finding locally. Telling someone in another repo
+// to run `make sast` when they have no Makefile is worse than telling them
+// nothing, so the defaults are direct scanner invocations that hold anywhere. A
+// repo with its own wrapper (this one has a Makefile) overrides them through the
+// `reproduce_commands` workflow input -> SECURITY_REPRODUCE_COMMANDS.
+export const DEFAULT_REPRODUCE_COMMANDS = {
+  gitleaks: 'gitleaks git . --redact=100',
+  trufflehog: 'trufflehog git file://. --results=verified,unverified,unknown',
+  'npm-audit': 'npm audit --package-lock-only',
+  'pip-audit': 'pip-audit --requirement requirements.txt --no-deps',
+  'osv-scanner': 'osv-scanner scan source --recursive .',
+  semgrep: 'semgrep scan --config p/owasp-top-ten .',
+  trivy: 'trivy image --scanners vuln,secret <image>',
+  'ecr-image-scan': 'trivy image --scanners vuln,secret <image>'
 };
+
+// Parses the SECURITY_REPRODUCE_COMMANDS override. Malformed JSON falls back to
+// the portable defaults rather than crashing the notifier — this is developer
+// guidance, never a gate input, so it must never be able to fail a run.
+export function resolveReproduceCommands(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return DEFAULT_REPRODUCE_COMMANDS;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_REPRODUCE_COMMANDS;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return DEFAULT_REPRODUCE_COMMANDS;
+  }
+
+  const overrides = Object.fromEntries(
+    Object.entries(parsed).filter(([, value]) => typeof value === 'string' && value !== '')
+  );
+  return { ...DEFAULT_REPRODUCE_COMMANDS, ...overrides };
+}
 
 function titleCase(value) {
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -119,7 +149,7 @@ function classify(finding, context) {
   const severity = (finding.severity || 'none').toLowerCase();
   const place = locationParts(finding.location);
   const isException = finding.action === 'EXCEPTION';
-  const reproduce = MAKE_TARGET[finding.source] || null;
+  const reproduce = (context?.reproduceCommands || DEFAULT_REPRODUCE_COMMANDS)[finding.source] || null;
   const link = deepLink(context, place);
 
   const base = {

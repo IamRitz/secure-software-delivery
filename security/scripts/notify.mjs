@@ -15,7 +15,13 @@ import { appendFile, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { buildReport, renderMarkdown, renderSlack, PR_COMMENT_MARKER } from './format-findings.mjs';
+import {
+  buildReport,
+  renderMarkdown,
+  renderSlack,
+  resolveReproduceCommands,
+  PR_COMMENT_MARKER
+} from './format-findings.mjs';
 
 // --- surface implementations (injectable for tests) --------------------------
 
@@ -235,7 +241,10 @@ async function main() {
     runUrl:
       process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID
         ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
-        : null
+        : null,
+    // Per-repo "reproduce this locally" commands. Unset falls back to direct
+    // scanner invocations that hold in any repo, never to this repo's Makefile.
+    reproduceCommands: resolveReproduceCommands(process.env.SECURITY_REPRODUCE_COMMANDS)
   };
   // gate_mode drives Slack suppression; a repo still in log-only pages no one.
   const mode = (process.env.GATE_MODE || options.mode || 'enforce').toLowerCase();

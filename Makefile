@@ -7,7 +7,11 @@ TRUFFLEHOG_IMAGE := trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323
 OSV_SCANNER_IMAGE := ghcr.io/google/osv-scanner@sha256:5116601dedc01c1c580eb92371883ec052fc4c13c3fbc109d621a63ac416d475
 SEMGREP_IMAGE := semgrep/semgrep@sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e
 
-.PHONY: secrets dependencies sast security gate image-gate demo-malicious-package demo-dependency-no-fix
+# Kept in one place so the scan, the CI workflow input, and the rulesets recorded
+# in a generated baseline cannot drift apart.
+SEMGREP_RULESETS := p/owasp-top-ten p/javascript security/semgrep-rules.yml
+
+.PHONY: secrets dependencies sast security gate image-gate baseline demo-malicious-package demo-dependency-no-fix
 
 reports:
 	mkdir -p reports
@@ -55,9 +59,7 @@ sast: reports
 		-w /src \
 		$(SEMGREP_IMAGE) \
 		semgrep scan \
-		--config p/owasp-top-ten \
-		--config p/javascript \
-		--config security/semgrep-rules.yml \
+		$(addprefix --config ,$(SEMGREP_RULESETS)) \
 		--json-output=/reports/semgrep.json \
 		--metrics=off \
 		--disable-version-check \
@@ -71,6 +73,20 @@ gate:
 
 image-gate:
 	node security/scripts/image-gate.mjs
+
+# Candidate baseline for the TUNE phase. Depends on `security` (a COMPLETE scan)
+# and runs the gate first, because generate-semgrep-baseline.mjs refuses to
+# baseline from a run whose scans could not be trusted — and a partial local run
+# is exactly such a run. The gate's BLOCK/PASS verdict is irrelevant here (a
+# repo being tuned is expected to have findings); its `integrity` flag is not.
+# Review the candidate before replacing the checked-in baseline.
+baseline: security
+	node security/scripts/security-gate.mjs || true
+	node security/scripts/generate-semgrep-baseline.mjs \
+		--report reports/semgrep.json \
+		--gate reports/security-gate.json \
+		--rulesets "$(SEMGREP_RULESETS)" \
+		--output reports/semgrep-baseline.candidate.json
 
 demo-malicious-package: reports
 	node security/scripts/security-gate.mjs \

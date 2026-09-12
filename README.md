@@ -112,6 +112,13 @@ Secret and SAST scans are **incremental** on `pull_request`/`push` (commit range
 only) and full on the weekly schedule — see
 [`docs/github-actions.md`](docs/github-actions.md).
 
+The GitHub pipeline is **reusable security workflows plus thin callers**:
+`_source-security.yml`, `_image-scan-prepush.yml`, `_artifact-gate.yml`, and the
+`_ecr-collect.yml` registry adapter, called by `security.yml` (pull requests and
+the weekly schedule) and `deploy.yml` (push to `main` and manual dispatch). The
+onboarding interface — every input, output, and portability rule — is
+[`docs/workflow-contracts.md`](docs/workflow-contracts.md).
+
 ## The gate — three states, fail-closed
 
 The shared evaluator (`security/scripts/security-gate.mjs`) returns **PASS**,
@@ -147,6 +154,7 @@ structured-but-unverified (see [`docs/jenkins.md`](docs/jenkins.md)).
 
 ## Adopting this in another repo
 
-See [`docs/onboarding.md`](docs/onboarding.md): reusable workflow / shared
+See [`docs/workflow-contracts.md`](docs/workflow-contracts.md) for the contracts
+and [`docs/onboarding.md`](docs/onboarding.md) for the rollout: reusable workflow / shared
 library rather than copy-paste, generating a Semgrep baseline first, and the
 LOG-before-BLOCK rollout.

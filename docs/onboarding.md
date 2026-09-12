@@ -11,10 +11,16 @@ Do **not** clone `.github/workflows/security.yml` or the `Jenkinsfile` into ever
 repo — that guarantees drift the moment one is fixed (exactly the drift this
 project's Phase 12 had to reconcile).
 
-- **GitHub Actions:** publish `security.yml` as a **reusable workflow** in a
-  central repo and have each consumer call it with `uses:
-  your-org/ci-security/.github/workflows/security.yml@<pinned-sha>`, passing
-  repo-specific values as `inputs`/`vars`. Pin to a SHA, not a moving tag.
+- **GitHub Actions:** this split is already done. `_source-security.yml`,
+  `_image-scan-prepush.yml`, `_artifact-gate.yml`, and `_ecr-collect.yml` are
+  `workflow_call` reusable workflows; `security.yml` and `deploy.yml` are thin
+  callers. Their inputs, outputs, and portability rules are documented in
+  `docs/workflow-contracts.md`. To centralize, publish the four `_`-prefixed
+  files in a central repo and change each caller's `uses: ./.github/workflows/_x.yml`
+  to `uses: your-org/ci-security/.github/workflows/_x.yml@<pinned-sha>` — the
+  structure and the contracts do not change. Pin to a SHA, not a moving tag.
+  See "Extraction notes" in `docs/workflow-contracts.md` for the two couplings
+  that still need resolving when the files leave this repo.
 - **Jenkins:** move the pipeline body into a **Shared Library** and have each
   repo's `Jenkinsfile` be a thin call into it. The scanner/gate/deploy scripts
   (`security/scripts/*.mjs`) are already plain Node with no per-repo coupling and
@@ -75,13 +81,33 @@ Confirm whether the new repo actually enforces "no direct push to `main`":
   not a control). Verify the `security-gate` check is *required*, admin bypass
   disabled, and direct pushes blocked.
 
+- **Who can turn the gate off.** `gate_mode: log-only` makes the gate genuinely
+  non-blocking — that is the point of the LOG phase, but it also means one line
+  in the app-team-owned caller workflow turns a red required check green,
+  including for report-integrity failures. A repo without CODEOWNERS on
+  `.github/workflows/` therefore has an **unreviewed path to bypassing its own
+  security gate**, reviewed by whoever normally reviews that repo's code.
+
+  Onboarding checklist for this:
+
+  1. Ship `.github/CODEOWNERS` covering `/.github/workflows/`,
+     `/security/policy.yaml`, `/security/scripts/`, `/security/baseline/`, and
+     the local Semgrep rules — owned by the security team, not the app team.
+  2. Enable **Require review from Code Owners** (and at least one required
+     approval) in branch protection. CODEOWNERS enforces nothing without it.
+  3. Expect the `gate-mode: LOG-ONLY (gate NOT enforcing)` check on every PR
+     while the repo is in the LOG phase. That check going away is how you know
+     the repo reached BLOCK; it turning up again is how you notice a regression.
+
+  See `docs/workflow-contracts.md` § "log-only is a merge bypass".
+
 - **If branch protection can't be fully relied on**, the pipeline still has a
   fallback built into the **job dependency DAG**: the delivery jobs are gated on
-  the gate job in-workflow, not only by branch protection. In `security.yml`,
-  `container-build` carries `needs: security-gate` **and**
-  `if: needs.security-gate.result == 'success' && github.ref == 'refs/heads/main'`,
-  and `aws-delivery` only runs when configuration is present and the build
-  produced an artifact. So even on a repo where someone can push directly to
+  the gate job in-workflow, not only by branch protection. In `deploy.yml`,
+  `aws-configuration` and `ecr-collect` carry
+  `needs: [source-security, image-security]` **and**
+  `if: github.ref == 'refs/heads/main' && needs.source-security.result == 'success' && …`,
+  and they only run when the AWS configuration is present. So even on a repo where someone can push directly to
   `main`, a failing gate still prevents build and deploy from running — the
   `needs:`/`if:` chain is the enforcement of last resort. Jenkins does the same
   via stage `when { branch 'main'; expression { … } }` guards. Branch protection

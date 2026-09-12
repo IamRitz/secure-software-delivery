@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { parseSimplePolicy, policyAction } from './security-gate.mjs';
+import { parseSimplePolicy, policyAction, summarizeIntegrity } from './security-gate.mjs';
 
 const DEFAULT_PATHS = {
   policy: 'security/policy.yaml',
@@ -258,20 +258,21 @@ export async function runImageGate(customPaths = {}) {
       paths.source === 'trivy'
         ? evaluateTrivy(policy, report)
         : evaluate(policy, report);
+    result.integrity = summarizeIntegrity(result.findings);
   } catch (error) {
+    const integrityFinding = {
+      source: 'image-gate',
+      id: 'report-integrity',
+      severity: 'unknown',
+      action: 'BLOCK_DEPLOY',
+      policyRule: 'image.report_integrity',
+      reason: error.message
+    };
     result = {
       verdict: 'BLOCK_DEPLOY',
       summary: { blockDeploy: 1, log: 0 },
-      findings: [
-        {
-          source: 'image-gate',
-          id: 'report-integrity',
-          severity: 'unknown',
-          action: 'BLOCK_DEPLOY',
-          policyRule: 'image.report_integrity',
-          reason: error.message
-        }
-      ]
+      integrity: summarizeIntegrity([integrityFinding]),
+      findings: [integrityFinding]
     };
   }
 
