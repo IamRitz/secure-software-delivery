@@ -1,0 +1,277 @@
+name: Deploy
+
+# Push-to-main and manual delivery. Owns `push` to main and `workflow_dispatch`;
+# `security.yml` owns `pull_request` and `schedule`. Neither reacts to the
+# other's events, so the scanners run exactly once per event.
+#
+# Chain:
+#   source-security (no creds) -> container-build (no creds)
+#     -> image-security (no creds) -> aws-configuration (detect only, no creds)
+#     -> ecr-collect (ECR push+scan role) -> artifact-gate (no creds)
+#     -> deploy (SSM deploy role)
+#
+# CREDENTIAL BOUNDARY: only `ecr-collect` and `deploy` assume an AWS role. Every
+# security workflow called here is invoked WITHOUT `secrets: inherit` and holds
+# no cloud credentials.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      break_glass_demo:
+        description: Synthetic eligible BLOCK for the Phase 11 interaction demo
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - sast
+          - dependency
+      break_glass_pr_number:
+        description: PR number that receives the audited decision comment
+        required: false
+        type: string
+      break_glass_notify_url:
+        description: Override the notify webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_NOTIFY_URL
+        required: false
+        type: string
+      break_glass_status_url:
+        description: Override the status webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_STATUS_URL
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  source-security:
+    # Only ONE secret crosses this boundary: the break-glass HMAC shared secret,
+    # passed explicitly. It is not a cloud credential and grants no AWS access.
+    # NEVER change this to `secrets: inherit` — that would hand every repo secret
+    # (including any that could reach AWS) to the scanning jobs.
+    uses: ./.github/workflows/_source-security.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
+      semgrep_configs: |
+        p/owasp-top-ten
+        p/javascript
+        security/semgrep-rules.yml
+      semgrep_paths: src
+      slack_notify_url: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+      reproduce_commands: >-
+        {"gitleaks":"make secrets","trufflehog":"make secrets","npm-audit":"make dependencies",
+        "pip-audit":"make dependencies","osv-scanner":"make dependencies","semgrep":"make sast",
+        "trivy":"make image-gate","ecr-image-scan":"make image-gate"}
+      pr_number: ${{ inputs.break_glass_pr_number }}
+      break_glass_enabled: true
+      # A SYNTHETIC BLOCK must never reach the production endpoints, so when
+      # break_glass_demo is set these deliberately do NOT fall back to the repo
+      # Variables — the dispatcher must supply dev endpoints explicitly, and
+      # `_source-security.yml` refuses to run the fixture if either is empty.
+      break_glass_notify_url: ${{ (inputs.break_glass_demo || 'none') == 'none' && (inputs.break_glass_notify_url || vars.BREAK_GLASS_NOTIFY_URL) || inputs.break_glass_notify_url }}
+      break_glass_status_url: ${{ (inputs.break_glass_demo || 'none') == 'none' && (inputs.break_glass_status_url || vars.BREAK_GLASS_STATUS_URL) || inputs.break_glass_status_url }}
+      break_glass_timeout_seconds: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
+      synthetic_block_fixture: ${{ inputs.break_glass_demo || 'none' }}
+    secrets:
+      break_glass_shared_secret: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
+
+  container-build:
+    # Repo-specific build. Holds ZERO cloud credentials — it only builds the
+    # image and uploads it as a tarball artifact.
+    name: Container build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build application image without AWS credentials
+        # The release build uses no-cache so a potentially poisoned Actions cache
+        # entry can never be baked into the image that actually ships (review §C3).
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          no-cache: true
+          tags: secure-software-delivery:${{ github.sha }}
+
+      - name: Export image tarball
+        run: docker save -o application-image.tar "secure-software-delivery:$GITHUB_SHA"
+
+      - name: Upload image tarball for the scan and push jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: application-image-${{ github.sha }}
+          path: application-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  image-security:
+    # Pre-push gate. A BLOCK_DEPLOY here fails this job, so every job below —
+    # which all `needs` it transitively — is skipped and the image is never
+    # pushed. NOTE: no `secrets: inherit`; this call passes no secrets at all.
+    needs: container-build
+    uses: ./.github/workflows/_image-scan-prepush.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      image_artifact: application-image-${{ github.sha }}
+      gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
+      slack_notify_url: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+      reproduce_commands: '{"trivy":"make image-gate","ecr-image-scan":"make image-gate"}'
+
+  aws-configuration:
+    name: AWS configuration
+    # Detection only (no credentials). Runs after the source gate and the
+    # pre-push image gate; the credential boundary itself is the explicit
+    # push-to-main guard below plus the OIDC trust policies pinned to
+    # refs/heads/main.
+    needs:
+      - source-security
+      - image-security
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.source-security.result == 'success' &&
+      needs.image-security.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.detect.outputs.configured }}
+
+    steps:
+      - name: Detect AWS delivery configuration
+        id: detect
+        # Two OIDC roles: one for ECR push+scan (both are registry operations on
+        # the same repo), one for the SSM deploy. The boundary that matters — the
+        # credentials that can reach the instance — stays separate from the
+        # registry credentials. All must be present, or the AWS stages skip.
+        env:
+          AWS_PUSH_SCAN_ROLE_ARN: ${{ vars.AWS_PUSH_SCAN_ROLE_ARN }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+        run: |
+          missing=()
+          for name in AWS_PUSH_SCAN_ROLE_ARN AWS_DEPLOY_ROLE_ARN AWS_REGION ECR_REPOSITORY EC2_INSTANCE_ID; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "AWS delivery configuration is present; real AWS stages will run"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS not configured — ECR push, image scan, artifact gate, and deploy skipped; see docs/aws-setup.md. Missing: ${missing[*]}"
+          fi
+
+  ecr-collect:
+    # FIRST job to assume an AWS role. The registry adapter: pushes, polls the
+    # ECR scan by digest, and emits the normalized report. It makes no policy
+    # decision — `artifact-gate` (no credentials) judges the report it produces.
+    # NOTE: no `secrets: inherit`; the role is assumed via OIDC from a `vars` ARN.
+    needs:
+      - source-security
+      - container-build
+      - image-security
+      - aws-configuration
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.source-security.result == 'success' &&
+      needs.image-security.result == 'success' &&
+      needs.aws-configuration.outputs.configured == 'true'
+    uses: ./.github/workflows/_ecr-collect.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      image_artifact: application-image-${{ github.sha }}
+      local_image_ref: secure-software-delivery:${{ github.sha }}
+      expected_image_id: ${{ needs.image-security.outputs.image_id }}
+      role_arn: ${{ vars.AWS_PUSH_SCAN_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION }}
+      ecr_repository: ${{ vars.ECR_REPOSITORY }}
+      immutable_tag: ${{ github.sha }}
+      extra_tags: demo
+
+  artifact-gate:
+    # Holds NO cloud credentials and names no registry: it reads the normalized
+    # report and evaluates policy. A Critical/High finding, or a missing or
+    # malformed report, fails this job -> `deploy` (which needs it) is skipped
+    # and never starts.
+    needs: ecr-collect
+    uses: ./.github/workflows/_artifact-gate.yml
+    permissions:
+      contents: read
+    with:
+      report_artifact: ${{ needs.ecr-collect.outputs.report_artifact }}
+      report_path: ${{ needs.ecr-collect.outputs.report_path }}
+      expected_digest: ${{ needs.ecr-collect.outputs.image_digest }}
+      gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
+      slack_notify_url: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
+      reproduce_commands: '{"trivy":"make image-gate","ecr-image-scan":"make image-gate"}'
+
+  deploy:
+    name: Deploy
+    # Runs only when artifact-gate SUCCEEDED. Because `deploy` needs
+    # `artifact-gate`, a failed gate skips this job entirely — it never starts,
+    # so a Critical/High image finding can never reach a deploy. Holds SSM
+    # permissions only (ssm:SendCommand + ssm:GetCommandInvocation); no ECR access.
+    needs:
+      - artifact-gate
+      - ecr-collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out deploy script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.2'
+          package-manager-cache: false
+
+      - name: Assume the SSM deploy role (SSM only)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ssd-deploy
+
+      - name: Deploy approved image to EC2 via SSM
+        # No SSH, no inbound port: SSM SendCommand runs the deploy on the instance,
+        # which pulls from ECR with its OWN read-only role — the deploy role holds
+        # no ECR access at all.
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REGISTRY: ${{ needs.ecr-collect.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          EC2_APP_PORT: ${{ vars.EC2_APP_PORT || '3000' }}
+          # Digest chain link 5 (scan -> deploy): pull the exact manifest that was
+          # scanned and gated, by digest — not a mutable tag.
+          IMAGE_DIGEST: ${{ needs.ecr-collect.outputs.image_digest }}
+        run: |
+          node security/scripts/ssm-deploy.mjs \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --region "$AWS_REGION" \
+            --registry "$ECR_REGISTRY" \
+            --repository "$ECR_REPOSITORY" \
+            --image-digest "$IMAGE_DIGEST" \
+            --app-port "$EC2_APP_PORT"

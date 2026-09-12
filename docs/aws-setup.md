@@ -19,16 +19,16 @@ is available.
 The thing Trivy scanned, the thing ECR scanned, and the thing EC2 runs are bound
 to a single immutable digest so a mutable tag can never be swapped in between:
 
-1. **build → scan:** `image-scan-prepush` records Trivy's `Metadata.ImageID` (the
-   image config digest) as a job output.
-2. **scan → push:** `push-and-scan` asserts the loaded artifact's
-   `docker inspect .Id` equals that ImageID before pushing, then records the
-   pushed **manifest digest**.
-3. **push → ECR scan:** the same `push-and-scan` job polls ECR
+1. **build → scan:** `_image-scan-prepush.yml` records Trivy's
+   `Metadata.ImageID` (the image config digest) as a workflow output.
+2. **scan → push:** `_ecr-collect.yml` asserts the loaded artifact's
+   `docker inspect .Id` equals that ImageID (passed in as `expected_image_id`)
+   before pushing, then records the pushed **manifest digest**.
+3. **push → ECR scan:** the same collector polls ECR
    `--image-digest <that manifest digest>`; `poll-ecr-scan.mjs` asserts ECR
    scanned exactly that digest.
-4. **scan → gate:** `deploy-gate` re-asserts the report's digest equals the pushed
-   digest before running `image-gate.mjs`.
+4. **scan → gate:** `_artifact-gate.yml` re-asserts the report's digest equals
+   the `expected_digest` the collector pushed, before running `image-gate.mjs`.
 5. **gate → deploy:** `deploy` runs `ssm-deploy.mjs --image-digest`, so the
    instance `docker pull`s `registry/repo@sha256:…`, never a tag.
 
@@ -39,10 +39,10 @@ to a single immutable digest so a mutable tag can never be swapped in between:
    `sts.amazonaws.com`.
 2. Create **two** IAM roles for this repository. ECR push and the ECR
    scan-findings read are both registry operations on the same repository, so
-   they share one role (`push-and-scan`); the SSM **deploy** role — the
+   they share one role (assumed in `_ecr-collect.yml`); the SSM **deploy** role — the
    credentials that can reach the instance — stays separate, which is the
    boundary that matters. No single role can both push an image and deploy it.
-   The `image-scan-prepush` and `deploy-gate` jobs assume no role at all (they
+   `_image-scan-prepush.yml` and `_artifact-gate.yml` assume no role at all (they
    only scan a tarball / evaluate a report). Both roles share the **same trust
    policy** (audience above + the exact `main` subject); only their permission
    policies differ. This repository was created after GitHub introduced immutable
@@ -75,7 +75,7 @@ Never broaden this to all repositories or pull-request subjects.
 3. Attach one **least-privilege** policy per role. Each is limited to this ECR
    repository / this EC2 instance, and each job gets only what it needs:
 
-   **Push+scan role** — assumed by the `push-and-scan` job. ECR write **and**
+   **Push+scan role** — assumed by `_ecr-collect.yml`. ECR write **and**
    scan-findings read on this repo; no SSM:
 
 ```json
@@ -124,7 +124,7 @@ must be granted on `*` — a hard-won detail: scoping it to the instance ARN
 silently denies the read-back and the deploy hangs then fails. The deploy role
 holds **no ECR permissions** — the EC2 instance pulls the image with its **own**
 role (`AmazonSSMManagedInstanceCore` + read-only ECR pull); no runner role,
-push or otherwise, is ever shared with the box. The `deploy-gate` job holds no
+push or otherwise, is ever shared with the box. The `artifact-gate` job holds no
 AWS credentials whatsoever (it declares no `id-token` and assumes no role).
 
 4. Add these GitHub **repository variables**, not static AWS secrets:

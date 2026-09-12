@@ -6,6 +6,8 @@ import {
   renderMarkdown,
   renderSlack,
   route,
+  resolveReproduceCommands,
+  DEFAULT_REPRODUCE_COMMANDS,
   PR_COMMENT_MARKER
 } from '../security/scripts/format-findings.mjs';
 import { dispatch, upsertPrComment } from '../security/scripts/notify.mjs';
@@ -644,5 +646,54 @@ describe('format-findings: repo-scale finding count renders readably', () => {
     // Slack stays concise: at most 5 highlighted blocking findings + a "more" note.
     const slack = renderSlack(report);
     assert.match(slackText(slack), /and 7 more/);
+  });
+});
+
+// Developer guidance must be portable: a consumer repo has no Makefile of ours,
+// and a wrong local command is worse than none.
+describe('format-findings: reproduce commands are per-repo, not this repo', () => {
+  const SEMGREP_GATE = {
+    verdict: 'BLOCK',
+    findings: [
+      {
+        source: 'semgrep',
+        id: 'rules.command-injection',
+        severity: 'high',
+        action: 'BLOCK',
+        policyRule: 'sast.high_new',
+        location: 'src/app.js:10',
+        message: 'Command injection',
+        reason: 'high Semgrep finding is new'
+      }
+    ]
+  };
+
+  it('defaults to a direct scanner invocation, never a Makefile target', () => {
+    const report = buildReport({ gate: SEMGREP_GATE, context: CONTEXT });
+    assert.equal(report.cards[0].reproduce, DEFAULT_REPRODUCE_COMMANDS.semgrep);
+    assert.ok(!/\bmake\b/.test(report.cards[0].reproduce));
+    assert.match(renderMarkdown(report), /Reproduce locally/);
+  });
+
+  it('uses the per-repo override when the workflow supplies one', () => {
+    const report = buildReport({
+      gate: SEMGREP_GATE,
+      context: { ...CONTEXT, reproduceCommands: resolveReproduceCommands('{"semgrep":"make sast"}') }
+    });
+    assert.equal(report.cards[0].reproduce, 'make sast');
+  });
+
+  it('keeps the portable defaults for sources the override omits', () => {
+    const commands = resolveReproduceCommands('{"semgrep":"make sast"}');
+    assert.equal(commands.semgrep, 'make sast');
+    assert.equal(commands['npm-audit'], DEFAULT_REPRODUCE_COMMANDS['npm-audit']);
+  });
+
+  it('falls back to the defaults rather than crashing on unusable input', () => {
+    for (const raw of ['', '   ', 'not json', '["a"]', 'null', '42', undefined]) {
+      assert.deepEqual(resolveReproduceCommands(raw), DEFAULT_REPRODUCE_COMMANDS);
+    }
+    // Non-string values inside a valid object are ignored, not rendered.
+    assert.equal(resolveReproduceCommands('{"semgrep":7}').semgrep, DEFAULT_REPRODUCE_COMMANDS.semgrep);
   });
 });

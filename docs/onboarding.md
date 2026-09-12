@@ -11,10 +11,16 @@ Do **not** clone `.github/workflows/security.yml` or the `Jenkinsfile` into ever
 repo — that guarantees drift the moment one is fixed (exactly the drift this
 project's Phase 12 had to reconcile).
 
-- **GitHub Actions:** publish `security.yml` as a **reusable workflow** in a
-  central repo and have each consumer call it with `uses:
-  your-org/ci-security/.github/workflows/security.yml@<pinned-sha>`, passing
-  repo-specific values as `inputs`/`vars`. Pin to a SHA, not a moving tag.
+- **GitHub Actions:** this split is already done. `_source-security.yml`,
+  `_image-scan-prepush.yml`, `_artifact-gate.yml`, and `_ecr-collect.yml` are
+  `workflow_call` reusable workflows; `security.yml` and `deploy.yml` are thin
+  callers. Their inputs, outputs, and portability rules are documented in
+  `docs/workflow-contracts.md`. To centralize, publish the four `_`-prefixed
+  files in a central repo and change each caller's `uses: ./.github/workflows/_x.yml`
+  to `uses: your-org/ci-security/.github/workflows/_x.yml@<pinned-sha>` — the
+  structure and the contracts do not change. Pin to a SHA, not a moving tag.
+  See "Extraction notes" in `docs/workflow-contracts.md` for the two couplings
+  that still need resolving when the files leave this repo.
 - **Jenkins:** move the pipeline body into a **Shared Library** and have each
   repo's `Jenkinsfile` be a thin call into it. The scanner/gate/deploy scripts
   (`security/scripts/*.mjs`) are already plain Node with no per-repo coupling and
@@ -77,11 +83,11 @@ Confirm whether the new repo actually enforces "no direct push to `main`":
 
 - **If branch protection can't be fully relied on**, the pipeline still has a
   fallback built into the **job dependency DAG**: the delivery jobs are gated on
-  the gate job in-workflow, not only by branch protection. In `security.yml`,
-  `container-build` carries `needs: security-gate` **and**
-  `if: needs.security-gate.result == 'success' && github.ref == 'refs/heads/main'`,
-  and `aws-delivery` only runs when configuration is present and the build
-  produced an artifact. So even on a repo where someone can push directly to
+  the gate job in-workflow, not only by branch protection. In `deploy.yml`,
+  `aws-configuration` and `ecr-collect` carry
+  `needs: [source-security, image-security]` **and**
+  `if: github.ref == 'refs/heads/main' && needs.source-security.result == 'success' && …`,
+  and they only run when the AWS configuration is present. So even on a repo where someone can push directly to
   `main`, a failing gate still prevents build and deploy from running — the
   `needs:`/`if:` chain is the enforcement of last resort. Jenkins does the same
   via stage `when { branch 'main'; expression { … } }` guards. Branch protection
