@@ -93,6 +93,12 @@ on:
       break_glass_eligible:
         description: 'true when the BLOCK consists only of break-glass-eligible findings'
         value: ${{ jobs.source-gate.outputs.break_glass_eligible }}
+      gate_mode:
+        description: The mode this run actually evaluated under. Echoed back so a caller reports the real mode rather than what it believes it passed.
+        value: ${{ jobs.source-gate.outputs.gate_mode }}
+      integrity_trusted:
+        description: '`false` when a scanner could not interpret its input. A `false` here means the findings list is UNKNOWN, not clean — never baseline from such a run.'
+        value: ${{ jobs.source-gate.outputs.integrity_trusted }}
 
 permissions:
   contents: read
@@ -436,6 +442,8 @@ jobs:
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
       break_glass_eligible: ${{ steps.verdict.outputs.break_glass_eligible }}
+      gate_mode: ${{ inputs.gate_mode }}
+      integrity_trusted: ${{ steps.verdict.outputs.integrity_trusted }}
 
     steps:
       - name: Check out gate policy and evaluator
@@ -513,9 +521,12 @@ jobs:
         run: |
           verdict="$(node -e 'try{process.stdout.write(require("./reports/security-gate.json").verdict||"BLOCK")}catch{process.stdout.write("BLOCK")}')"
           eligible="$(node -e 'try{process.stdout.write(String(require("./reports/security-gate.json").breakGlass?.eligible===true))}catch{process.stdout.write("false")}')"
+          # Fail closed: an unreadable or integrity-less gate result is untrusted.
+          trusted="$(node -e 'try{process.stdout.write(String(require("./reports/security-gate.json").integrity?.trusted===true))}catch{process.stdout.write("false")}')"
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
           echo "break_glass_eligible=$eligible" >> "$GITHUB_OUTPUT"
-          echo "SECURITY GATE: $verdict (break-glass eligible: $eligible)"
+          echo "integrity_trusted=$trusted" >> "$GITHUB_OUTPUT"
+          echo "SECURITY GATE: $verdict (break-glass eligible: $eligible, scan trusted: $trusted)"
 
       - name: Confirm the BLOCK is eligible before loading any approval credential
         if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled }}
@@ -558,6 +569,29 @@ jobs:
           SECURITY_REPRODUCE_COMMANDS: ${{ inputs.reproduce_commands }}
         run: node "${{ inputs.toolkit_path }}/scripts/notify.mjs" --gate reports/security-gate.json
 
+      - name: Flag an untrusted scan (blocks baseline generation)
+        # Runs in EVERY mode. In `log-only` an integrity BLOCK does not fail the
+        # job, which is exactly when this needs to be loud: the TUNE phase
+        # generates a Semgrep baseline from a log-only run, and baselining from a
+        # scan that could not interpret its input writes "no findings" into the
+        # permanently accepted state. generate-semgrep-baseline.mjs refuses on
+        # `integrity.trusted: false`; this makes the same fact visible to humans
+        # and ships a marker inside the reports artifact.
+        if: ${{ always() && steps.verdict.outputs.integrity_trusted != 'true' }}
+        run: |
+          {
+            echo "This repository's scan COULD NOT BE TRUSTED on this run."
+            echo
+            echo "A scanner could not interpret its input (missing or malformed report,"
+            echo "unidentifiable base image OS, or an end-of-life OS with no advisories)."
+            echo "The findings list is UNKNOWN, not clean."
+            echo
+            echo "DO NOT GENERATE A SEMGREP BASELINE FROM THIS RUN."
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } | tee reports/DO-NOT-BASELINE.txt >> "$GITHUB_STEP_SUMMARY"
+          node -e 'const f=(require("./reports/security-gate.json").integrity?.failures)||[];for(const x of f)console.log(`::error title=Untrusted scan — do not baseline::${x.source}: ${x.reason}`)' \
+            || echo "::error title=Untrusted scan — do not baseline::the gate result could not be read"
+
       - name: Upload security gate decision
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -568,6 +602,7 @@ jobs:
             reports/gate-exceptions.json
             reports/break-glass-request.json
             reports/break-glass-decision.json
+            reports/DO-NOT-BASELINE.txt
           if-no-files-found: error
           retention-days: 14
 

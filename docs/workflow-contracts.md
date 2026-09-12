@@ -89,6 +89,8 @@ whatsoever — they cannot receive one.
 | --- | --- |
 | `verdict` | `PASS` \| `PASS-WITH-EXCEPTIONS` \| `BLOCK` |
 | `break_glass_eligible` | `true` when the BLOCK consists only of break-glass-eligible findings |
+| `gate_mode` | the mode this run actually evaluated under, echoed back |
+| `integrity_trusted` | `false` when a scanner could not interpret its input — findings are UNKNOWN, not clean |
 
 The calling job **fails** when the verdict is `BLOCK` in `enforce` mode and no
 verified break-glass approval overrode it.
@@ -114,6 +116,8 @@ registry.
 | --- | --- |
 | `verdict` | `DEPLOY` \| `DEPLOY-WITH-EXCEPTIONS` \| `BLOCK_DEPLOY` |
 | `image_id` | Trivy `Metadata.ImageID` — the image config digest that anchors the digest chain |
+| `gate_mode` | the mode this run actually evaluated under, echoed back |
+| `integrity_trusted` | `false` on a Trivy false clean (no OS family, no `os-pkgs` result) or an end-of-life base image |
 
 ## `_artifact-gate.yml`
 
@@ -195,12 +199,75 @@ policy do not change.
 | `log-only` | reported, job passes | never | Onboarding (the LOG phase) |
 
 `log-only` suppresses **every** failure, including a fail-closed
-report-integrity BLOCK — that is the point of the onboarding phase, and it is
-why each gate job emits a loud `::warning::` saying the gate is not blocking.
+report-integrity BLOCK — that is the point of the onboarding phase.
 Do not leave a repo in `log-only` after it has been tuned.
 
 Set repo variable `GATE_MODE` to switch; both callers read
 `${{ vars.GATE_MODE || 'enforce' }}`, so an unset variable enforces.
+
+### log-only is a merge bypass, and what contains it
+
+A caller workflow is app-team-owned and edited by ordinary pull request, so
+`gate_mode: log-only` is a one-line change that turns a red required check
+green. Three controls contain that, none of which is the mode itself:
+
+1. **The mode is visible on the PR without opening the run.** See
+   [Mode visibility](#mode-visibility-and-the-required-check-name) below.
+2. **An untrusted scan can never become a baseline** — see
+   [Integrity in log-only](#integrity-in-log-only).
+3. **`.github/CODEOWNERS` requires security review** of the callers, the
+   reusable workflows, the policy, the gate scripts, and the baseline. This is
+   advisory until branch protection enables *Require review from Code Owners*.
+
+### Mode visibility and the required check name
+
+The required context `security-gate` has a **constant** name. Branch protection
+matches required checks by exact string, so a name that varied with the mode
+(`security-gate (log-only)`) would stop matching in one of the two modes and the
+rule would silently protect nothing — the same class of invisible failure the
+split itself had to avoid.
+
+Mode visibility therefore lives in a **second, non-required** check, `gate-mode`,
+whose name *does* vary:
+
+| Effective mode | Reported check name |
+| --- | --- |
+| `enforce` | `gate-mode: enforce` |
+| `log-only` | `gate-mode: LOG-ONLY (gate NOT enforcing)` |
+
+Because nothing matches `gate-mode` by string, a varying name is safe there.
+It reads the mode from `needs.source-security.outputs.gate_mode` — the value the
+reusable workflow actually evaluated under — rather than from `vars.GATE_MODE`,
+so an edit to the caller's `with:` block cannot put the gate in log-only while
+this check still displays "enforce".
+
+`gate-mode` goes **red** (without blocking the merge) when log-only is actually
+suppressing something: a `BLOCK`/`BLOCK_DEPLOY` that would otherwise have failed,
+or a scan whose integrity could not be trusted. In enforce mode with trusted,
+non-blocking scans it is green and quiet. The `security-gate` check additionally
+emits a `::warning::` in log-only saying it is green by configuration rather
+than by verdict.
+
+### Integrity in log-only
+
+`log-only` may let an integrity failure pass the **job**. It must never let one
+pass into a **baseline**. A report-integrity failure means a scanner could not
+interpret its input, so zero findings means *unknown*, not *clean*; the TUNE
+phase generates the Semgrep baseline from exactly these log-only runs, and
+baselining an uninterpretable scan writes "no findings" into the permanently
+accepted state.
+
+Every gate result therefore carries a machine-readable
+`integrity: { trusted, failures[] }` block, independent of the verdict, and:
+
+- `generate-semgrep-baseline.mjs` **hard-fails** unless at least one `--gate`
+  result is supplied and all of them report `integrity.trusted: true`. No gate
+  result, or a gate result with no `integrity` field, is also a refusal.
+- `make baseline` runs the full scan and the gate first, so the local path
+  cannot skip the check.
+- CI writes `reports/DO-NOT-BASELINE.txt` into the uploaded reports artifact,
+  prints `::error::` annotations, banners the job summary, and turns `gate-mode`
+  red — in **every** mode.
 
 ## Portability rules for consumers
 
@@ -249,6 +316,10 @@ verdict under the original name. **The branch protection rule needs no change.**
 verdict. It is **not** currently a required context (it wasn't before this split
 either); adding it to branch protection would make a pre-push image BLOCK_DEPLOY
 also block merge. That is a deliberate policy choice, not a default.
+
+The third published check, `gate-mode: …`, is deliberately never required — its
+name varies by mode on purpose. See
+[Mode visibility](#mode-visibility-and-the-required-check-name).
 
 `test/workflow-contracts.test.js` asserts the `security-gate` name, the trigger
 split, the registry-neutrality of `_artifact-gate.yml`, and the absence of

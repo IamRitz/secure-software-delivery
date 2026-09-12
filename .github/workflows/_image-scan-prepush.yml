@@ -53,6 +53,12 @@ on:
       image_id:
         description: Trivy's Metadata.ImageID (image config digest) — anchor of the build -> push -> scan -> deploy digest chain.
         value: ${{ jobs.image-scan-prepush.outputs.image_id }}
+      gate_mode:
+        description: The mode this run actually evaluated under.
+        value: ${{ jobs.image-scan-prepush.outputs.gate_mode }}
+      integrity_trusted:
+        description: '`false` when Trivy could not interpret the image (no OS family detected, no os-pkgs result, or an end-of-life OS). A zero-finding result is then UNKNOWN, not clean.'
+        value: ${{ jobs.image-scan-prepush.outputs.integrity_trusted }}
 
 permissions:
   contents: read
@@ -69,6 +75,8 @@ jobs:
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
       image_id: ${{ steps.trivy-id.outputs.image_id }}
+      gate_mode: ${{ inputs.gate_mode }}
+      integrity_trusted: ${{ steps.verdict.outputs.integrity_trusted }}
     steps:
       - name: Check out scan scripts and policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -127,8 +135,11 @@ jobs:
         if: always()
         run: |
           verdict="$(node -e 'try{process.stdout.write(require("./reports/image-gate-prepush.json").verdict||"BLOCK_DEPLOY")}catch{process.stdout.write("BLOCK_DEPLOY")}')"
+          # Fail closed: an unreadable or integrity-less gate result is untrusted.
+          trusted="$(node -e 'try{process.stdout.write(String(require("./reports/image-gate-prepush.json").integrity?.trusted===true))}catch{process.stdout.write("false")}')"
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-          echo "PRE-PUSH IMAGE GATE: $verdict"
+          echo "integrity_trusted=$trusted" >> "$GITHUB_OUTPUT"
+          echo "PRE-PUSH IMAGE GATE: $verdict (scan trusted: $trusted)"
 
       - name: Post developer-readable image findings (PR comment + summary; Slack on BLOCK_DEPLOY)
         if: always()
@@ -141,6 +152,26 @@ jobs:
           SECURITY_REPRODUCE_COMMANDS: ${{ inputs.reproduce_commands }}
         run: node "${{ inputs.toolkit_path }}/scripts/notify.mjs" --gate reports/image-gate-prepush.json
 
+      - name: Flag an untrusted image scan (blocks baseline generation)
+        # Runs in EVERY mode. A Trivy "false clean" (no OS family detected, no
+        # os-pkgs result) or an end-of-life base image means zero findings is
+        # UNKNOWN, not clean. In `log-only` that does not fail the job, so this
+        # is where it becomes visible and where the marker is produced.
+        if: ${{ always() && steps.verdict.outputs.integrity_trusted != 'true' }}
+        run: |
+          {
+            echo "The image scan COULD NOT BE TRUSTED on this run."
+            echo
+            echo "Trivy could not interpret the image (no OS family detected, no os-pkgs"
+            echo "result, or an end-of-life OS with no advisories). Zero findings here"
+            echo "means UNKNOWN, not clean."
+            echo
+            echo "DO NOT TREAT THIS RUN AS A CLEAN BASELINE."
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } | tee reports/DO-NOT-BASELINE.txt >> "$GITHUB_STEP_SUMMARY"
+          node -e 'const f=(require("./reports/image-gate-prepush.json").integrity?.failures)||[];for(const x of f)console.log(`::error title=Untrusted image scan — do not baseline::${x.source}: ${x.reason}`)' \
+            || echo "::error title=Untrusted image scan — do not baseline::the gate result could not be read"
+
       - name: Upload Trivy + pre-push gate reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -149,6 +180,7 @@ jobs:
           path: |
             reports/trivy-image.json
             reports/image-gate-prepush.json
+            reports/DO-NOT-BASELINE.txt
           if-no-files-found: warn
           retention-days: 14
 

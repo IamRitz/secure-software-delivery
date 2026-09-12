@@ -60,6 +60,12 @@ jobs:
     # workflow renames its own check to `source-security / source-gate`; this job
     # keeps the required context `security-gate` resolving, and keeps the public
     # check name independent of the internal job layout.
+    #
+    # This name is a CONSTANT and must stay one. Branch protection matches
+    # required checks by exact string, so a name that varied by gate mode would
+    # stop matching in one of the two modes and the rule would silently protect
+    # nothing. Mode visibility lives in the separate `gate-mode` check below,
+    # which is deliberately NOT a required context.
     name: security-gate
     needs: source-security
     if: ${{ always() }}
@@ -69,11 +75,86 @@ jobs:
         env:
           RESULT: ${{ needs.source-security.result }}
           VERDICT: ${{ needs.source-security.outputs.verdict }}
+          MODE: ${{ needs.source-security.outputs.gate_mode }}
+          TRUSTED: ${{ needs.source-security.outputs.integrity_trusted }}
         run: |
           echo "Source security verdict: ${VERDICT:-unknown} (job result: $RESULT)"
+          echo "Gate mode: ${MODE:-unknown}; scan trusted: ${TRUSTED:-unknown}"
+          if [ "$MODE" = "log-only" ]; then
+            echo "::warning::This check is GREEN BY CONFIGURATION, not by verdict — gate_mode is log-only, so a BLOCK does not fail it. See the 'gate-mode' check."
+          fi
           if [ "$RESULT" != "success" ]; then
             exit 1
           fi
+
+  gate-mode:
+    # Mode visibility, as its own check whose NAME carries the mode — so a
+    # reviewer sees `log-only` in the PR checks list without opening the run to
+    # find the ::warning::. It is intentionally NOT a required context, which is
+    # what makes a varying name safe here: nothing matches it by string.
+    #
+    # The mode is read back from `needs.source-security.outputs.gate_mode` — the
+    # value the reusable workflow actually evaluated under — not from
+    # `vars.GATE_MODE`. Reading the variable would let an edit to this caller's
+    # `with:` block put the gate in log-only while this check still displayed
+    # "enforce", which is precisely the bypass this is meant to surface.
+    #
+    # It goes RED when log-only is actually suppressing something: a BLOCK that
+    # would otherwise have failed, or a scan whose integrity could not be
+    # trusted. Red-but-not-required means visible without blocking the merge the
+    # repo has deliberately chosen not to block.
+    name: "${{ needs.source-security.outputs.gate_mode == 'log-only' && 'gate-mode: LOG-ONLY (gate NOT enforcing)' || format('gate-mode: {0}', needs.source-security.outputs.gate_mode || 'unknown') }}"
+    needs:
+      - source-security
+      - image-security
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the effective gate mode
+        env:
+          MODE: ${{ needs.source-security.outputs.gate_mode }}
+          SOURCE_VERDICT: ${{ needs.source-security.outputs.verdict }}
+          SOURCE_TRUSTED: ${{ needs.source-security.outputs.integrity_trusted }}
+          IMAGE_RESULT: ${{ needs.image-security.result }}
+          IMAGE_VERDICT: ${{ needs.image-security.outputs.verdict }}
+          IMAGE_TRUSTED: ${{ needs.image-security.outputs.integrity_trusted }}
+        run: |
+          {
+            echo "## Gate mode: \`${MODE:-unknown}\`"
+            echo
+            echo "| | verdict | scan trusted |"
+            echo "| --- | --- | --- |"
+            echo "| source security | \`${SOURCE_VERDICT:-unknown}\` | \`${SOURCE_TRUSTED:-unknown}\` |"
+            if [ "$IMAGE_RESULT" = "skipped" ]; then
+              echo "| pre-push image | _not run_ | _n/a_ |"
+            else
+              echo "| pre-push image | \`${IMAGE_VERDICT:-unknown}\` | \`${IMAGE_TRUSTED:-unknown}\` |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          suppressed=""
+          if [ "$SOURCE_TRUSTED" != "true" ]; then
+            suppressed="$suppressed source-scan-not-trusted"
+          fi
+          if [ "$IMAGE_RESULT" != "skipped" ] && [ "$IMAGE_TRUSTED" != "true" ]; then
+            suppressed="$suppressed image-scan-not-trusted"
+          fi
+          if [ "$MODE" = "log-only" ]; then
+            echo "::warning::gate_mode is log-only — the required \`security-gate\` check cannot fail on findings in this repository."
+            if [ "$SOURCE_VERDICT" = "BLOCK" ]; then
+              suppressed="$suppressed source-BLOCK-suppressed"
+            fi
+            if [ "$IMAGE_VERDICT" = "BLOCK_DEPLOY" ]; then
+              suppressed="$suppressed image-BLOCK_DEPLOY-suppressed"
+            fi
+          fi
+
+          if [ -n "$suppressed" ]; then
+            echo "::error::Findings are not being enforced or not trustworthy:$suppressed"
+            echo "> ⛔ **Not enforced / not trustworthy:**$suppressed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Gate mode ${MODE:-unknown}: nothing suppressed, scans trusted."
 
   container-build:
     # Repo-specific: the consumer owns its own build. Holds ZERO cloud

@@ -178,12 +178,39 @@ Tune phase, rerun the exact pinned Semgrep command, review every result, and
 generate a candidate baseline with:
 
 ```sh
-node security/scripts/generate-semgrep-baseline.mjs reports/semgrep.json
+make baseline   # runs the full scan + gate, then writes a candidate
+```
+
+or explicitly:
+
+```sh
+node security/scripts/generate-semgrep-baseline.mjs \
+  --report reports/semgrep.json \
+  --gate reports/security-gate.json \
+  --rulesets "p/owasp-top-ten p/javascript security/semgrep-rules.yml"
 ```
 
 Review the candidate before replacing the checked-in baseline. Baseline
 updates are policy decisions made through code review; CI must never update it
 automatically.
+
+**The generator refuses to run on a scan it cannot trust.** It requires at least
+one gate result (`--gate`) and every one of them must report
+`integrity.trusted: true`. A report-integrity failure means a scanner could not
+interpret its input — a missing or malformed report, a Trivy scan that could not
+identify the base image OS, an end-of-life OS with no advisories — so its zero
+findings mean *unknown*, not *clean*.
+
+This matters most during the TUNE phase, when the gate is usually in
+`log-only` mode and an integrity BLOCK deliberately does not fail the job.
+Baselining from such a run would write "no findings" into the permanently
+accepted state, and every later scan would then measure against a baseline built
+from a scan that never happened. CI surfaces the same fact as a job-summary
+banner, an `::error::` annotation, a red `gate-mode` check, and a
+`reports/DO-NOT-BASELINE.txt` marker inside the uploaded artifact.
+
+`--rulesets` is required rather than defaulted: a baseline that records configs
+it was not generated with is a quieter version of the same problem.
 
 An AI-based checker alongside Semgrep is a potential complementary control,
 but it is deliberately deferred beyond the core 12-phase POC, as is broader

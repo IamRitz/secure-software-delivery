@@ -132,3 +132,36 @@ describe('workflow split: branch protection still resolves', () => {
     assert.match(source, /^ {4}name: security-gate$/m);
   });
 });
+
+describe('workflow split: log-only cannot hide behind a stable check name', () => {
+  it('the required check name is a literal, never an expression', () => {
+    // Branch protection matches by exact string. If this name were computed from
+    // the gate mode, the required context would stop resolving in one mode and
+    // the rule would silently protect nothing.
+    const source = read('security.yml');
+    const nameLine = /^ {4}name: (.*)$/m.exec(
+      source.slice(source.indexOf('  security-gate:'))
+    );
+    assert.equal(nameLine[1].trim(), 'security-gate');
+    assert.ok(!nameLine[1].includes('${{'), 'required check name must not be computed');
+  });
+
+  it('a separate, non-required check carries the mode in its name', () => {
+    const source = readExecutable('security.yml');
+    assert.ok(jobIds(source).includes('gate-mode'));
+    const modeName = /^ {4}name: "(\$\{\{.*)"$/m.exec(source.slice(source.indexOf('  gate-mode:')));
+    assert.ok(modeName, 'gate-mode name must be an expression so it can show the mode');
+    assert.match(modeName[1], /log-only/);
+    // It must report the mode the reusable workflow actually ran under, not the
+    // repo variable — otherwise an edit to this caller's `with:` block could put
+    // the gate in log-only while this check still displayed "enforce".
+    assert.match(modeName[1], /needs\.source-security\.outputs\.gate_mode/);
+    assert.ok(!modeName[1].includes('vars.GATE_MODE'));
+  });
+
+  it('both security workflows expose whether their scan could be trusted', () => {
+    for (const file of ['_source-security.yml', '_image-scan-prepush.yml']) {
+      assert.match(read(file), /^ {6}integrity_trusted:$/m, `${file} must output integrity_trusted`);
+    }
+  });
+});

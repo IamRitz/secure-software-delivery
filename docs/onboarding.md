@@ -81,6 +81,26 @@ Confirm whether the new repo actually enforces "no direct push to `main`":
   not a control). Verify the `security-gate` check is *required*, admin bypass
   disabled, and direct pushes blocked.
 
+- **Who can turn the gate off.** `gate_mode: log-only` makes the gate genuinely
+  non-blocking — that is the point of the LOG phase, but it also means one line
+  in the app-team-owned caller workflow turns a red required check green,
+  including for report-integrity failures. A repo without CODEOWNERS on
+  `.github/workflows/` therefore has an **unreviewed path to bypassing its own
+  security gate**, reviewed by whoever normally reviews that repo's code.
+
+  Onboarding checklist for this:
+
+  1. Ship `.github/CODEOWNERS` covering `/.github/workflows/`,
+     `/security/policy.yaml`, `/security/scripts/`, `/security/baseline/`, and
+     the local Semgrep rules — owned by the security team, not the app team.
+  2. Enable **Require review from Code Owners** (and at least one required
+     approval) in branch protection. CODEOWNERS enforces nothing without it.
+  3. Expect the `gate-mode: LOG-ONLY (gate NOT enforcing)` check on every PR
+     while the repo is in the LOG phase. That check going away is how you know
+     the repo reached BLOCK; it turning up again is how you notice a regression.
+
+  See `docs/workflow-contracts.md` § "log-only is a merge bypass".
+
 - **If branch protection can't be fully relied on**, the pipeline still has a
   fallback built into the **job dependency DAG**: the delivery jobs are gated on
   the gate job in-workflow, not only by branch protection. In `deploy.yml`,
