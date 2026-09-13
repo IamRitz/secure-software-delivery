@@ -46,16 +46,27 @@ describe('poll-ecr-scan: raw response capture', () => {
   });
 
   it('records every failed attempt, stderr included, even though the poll throws', async () => {
-    await fakeAws(
-      'echo "An error occurred (AccessDeniedException) when calling the DescribeImageScanFindings operation" >&2\nexit 254'
-    );
+    await fakeAws('echo "Could not connect to the endpoint URL" >&2\nexit 255');
     await assert.rejects(pollEcrScan(options()), /AWS CLI failed while polling ECR/);
 
     const raw = JSON.parse(await readFile(join(directory, 'raw.json'), 'utf8'));
     assert.equal(raw.attempts.length, 2);
-    assert.equal(raw.attempts[0].exitCode, 254);
-    assert.match(raw.attempts[0].stderr, /AccessDeniedException/);
+    assert.equal(raw.attempts[0].exitCode, 255);
+    assert.match(raw.attempts[0].stderr, /Could not connect/);
     assert.equal(raw.attempts[0].response, null);
+  });
+
+  it('fails closed on the FIRST attempt for an authorization error instead of retrying', async () => {
+    // The exact stderr observed live when enhanced scanning was enabled on a role
+    // that only had ECR permissions.
+    await fakeAws(
+      'echo "aws: [ERROR]: An error occurred (AccessDeniedException) when calling the DescribeImageScanFindings operation: User: arn:aws:sts::123456789012:assumed-role/github-actions-ecr-push/ssd-ecr-push-scan is not authorized to perform: inspector2:ListCoverage on resource: arn:aws:inspector2:us-east-1:123456789012:/coverage/list" >&2\nexit 254'
+    );
+    await assert.rejects(pollEcrScan(options({ maxAttempts: 40 })), /authorization failure .*not retried/);
+
+    const raw = JSON.parse(await readFile(join(directory, 'raw.json'), 'utf8'));
+    assert.equal(raw.attempts.length, 1);
+    assert.match(raw.attempts[0].stderr, /inspector2:ListCoverage/);
   });
 
   it('records the raw body of a completed scan alongside the normalized result', async () => {

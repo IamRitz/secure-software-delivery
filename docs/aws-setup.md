@@ -94,10 +94,30 @@ Never broaden this to all repositories or pull-request subjects.
         "ecr:DescribeImageScanFindings"
       ],
       "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery"
+    },
+    {
+      "Sid": "EcrEnhancedScanningReadViaInspector",
+      "Effect": "Allow",
+      "Action": ["inspector2:ListCoverage", "inspector2:ListFindings"],
+      "Resource": "*"
     }
   ]
 }
 ```
+
+   **Enhanced scanning needs the Inspector statement.** With ECR *enhanced*
+   scanning (Amazon Inspector), `ecr:DescribeImageScanFindings` reads coverage
+   and findings from Inspector on the caller's behalf, so the ECR permission alone
+   is not enough. Observed on a real run: a role with only the ECR statement got
+   `AccessDeniedException … not authorized to perform: inspector2:ListCoverage on
+   resource: arn:aws:inspector2:<REGION>:<ACCOUNT_ID>:/coverage/list` on every
+   attempt, and the gate correctly failed closed with no deploy.
+   `inspector2:ListCoverage` is the permission that run demanded;
+   `inspector2:ListFindings` is expected to be required next (the findings read)
+   and is included so the fix does not take two rounds — confirm it against the
+   next run's raw capture. Both are account-level list APIs with no per-repository
+   resource ARN, hence `"Resource": "*"`; they are read-only. Basic scanning does
+   not need this statement.
 
    **Deploy role** — assumed by the `deploy` job. SSM only; **no ECR access at all**:
 
