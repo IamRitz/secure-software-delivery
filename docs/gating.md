@@ -52,6 +52,11 @@ workspace immediately after all three scanner stages.
 The thresholds are intentionally adjustable POC defaults, not a general policy
 language.
 
+Each blocking or exception policy key is explained to developers by fixed text
+in `security/scripts/policy-advisories.mjs`: what it means, why, and whether
+break-glass applies. A test fails if a new key lacks text. See
+[advisory-explainer.md](advisory-explainer.md).
+
 ## Deploy gate
 
 `security/scripts/image-gate.mjs` runs in two places against the `image` policy:

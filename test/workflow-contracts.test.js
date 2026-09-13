@@ -64,9 +64,11 @@ describe('workflow split: the credential boundary', () => {
     });
   }
 
-  it('only the ECR adapter and the deploy job assume a role', () => {
+  it('only the ECR adapter, the deploy job, and the advisory explainer assume a role', () => {
+    // `_advisory-explainer.yml` assumes an invoke-only role for one Lambda; its
+    // narrower contract is asserted in test/advisory-explainer.test.js.
     const assuming = allWorkflows.filter((file) => /role-to-assume/.test(read(file)));
-    assert.deepEqual(assuming.sort(), ['_ecr-collect.yml', 'deploy.yml']);
+    assert.deepEqual(assuming.sort(), ['_advisory-explainer.yml', '_ecr-collect.yml', 'deploy.yml']);
   });
 
   it('no workflow uses `secrets: inherit`', () => {

@@ -55,6 +55,21 @@ jobs:
     secrets:
       break_glass_shared_secret: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
 
+  advisory-explainer:
+    # POC, shadow mode, NON-GATING. Nothing may `needs:` this job and it is never
+    # a required check. It runs after the gate has decided, reads that decided
+    # result, and writes model explanations to its own log only. Same-repo PRs
+    # only: GitHub issues no OIDC token to fork PRs, so skip them explicitly.
+    needs: source-security
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/_advisory-explainer.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      role_arn: ${{ vars.ADVISORY_EXPLAINER_ROLE_ARN }}
+      aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
   security-gate:
     # Stable check name for branch protection. Moving the gate into a reusable
     # workflow renames its own check to `source-security / source-gate`; this job
