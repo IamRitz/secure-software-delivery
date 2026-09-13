@@ -12,6 +12,7 @@ it. The image digest is real.
 | `complete-mixed.json` | The `COMPLETE` body: `enhancedFindings[6]` (1 CRITICAL, 4 HIGH, 1 MEDIUM, all `fixAvailable: "YES"`) **and** `findings: []` |
 | `pending.json` | The `PENDING` body: `findings: []`, **no** `findingSeverityCounts`, no `enhancedFindings` |
 | `scan-not-found.stderr.txt` | Attempt 1 stderr, 2s after push: `ScanNotFoundException` — retryable |
+| `complete-before-findings.json` | **Run `34745111774`, attempt 2.** `status: COMPLETE` with `findings: []` and `imageScanCompletedAt`, but **no** `findingSeverityCounts` and no `enhancedFindings` — Inspector had not attached results yet. Not ready, not clean: the poller waits through it |
 | `failed-open-regression.json` | Same body as `complete-mixed.json`, named for the incident it pins: the basic-only normalizer read `findings: []` and reported a clean scan |
 
 ## Derived (one stated change from the live body each)

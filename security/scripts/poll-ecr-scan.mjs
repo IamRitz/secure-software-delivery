@@ -273,6 +273,7 @@ export async function pollEcrScan(options) {
   assert(Number.isFinite(options.delaySeconds) && options.delaySeconds >= 0, 'invalid delay');
   const invocation = awsInvocation(options);
   const attempts = [];
+  let lastWaitReason = 'no successful response';
 
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     const result = await run(invocation.command, invocation.arguments_, invocation.environment);
@@ -297,11 +298,23 @@ export async function pollEcrScan(options) {
       record.response = response;
       await recordRawAttempts(options.raw_output, attempts);
       const status = response.imageScanStatus?.status;
-      console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: ${status ?? 'UNKNOWN'}`);
-      if (status === 'COMPLETE') {
+      if (status === 'COMPLETE' && findingsAttached(response)) {
+        console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: COMPLETE`);
         return normalizeEcrResponse(response, options);
       }
-      if (!['IN_PROGRESS', 'PENDING', 'ACTIVE'].includes(status)) {
+      if (status === 'COMPLETE') {
+        // Observed live (run 34745111774): with enhanced scanning, ECR reported
+        // COMPLETE ~10s after imageScanCompletedAt with `findings: []` and NO
+        // severity counts or enhancedFindings — Inspector had not attached its
+        // results yet. The previous run's findings arrived ~22s after completion.
+        // This is "not ready", not "clean": wait within the attempt budget, and
+        // if the counts never appear, fail closed at the limit below.
+        lastWaitReason = 'COMPLETE but findings not yet attached (no findingSeverityCounts)';
+        console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: ${lastWaitReason}`);
+      } else if (['IN_PROGRESS', 'PENDING', 'ACTIVE'].includes(status)) {
+        lastWaitReason = status;
+        console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: ${status}`);
+      } else {
         throw new Error(`ECR image scan ended with status ${status ?? 'UNKNOWN'}`);
       }
     } else {
@@ -329,7 +342,17 @@ export async function pollEcrScan(options) {
     }
   }
 
-  throw new Error('ECR image scan did not complete before the polling limit');
+  throw new Error(
+    `ECR image scan did not complete before the polling limit (last state: ${lastWaitReason})`
+  );
+}
+
+// A COMPLETE status alone does not mean results are readable: the severity
+// counts are what a finished scan — basic or enhanced, clean or not — carries.
+// normalizeEcrResponse re-asserts this independently.
+export function findingsAttached(response) {
+  const counts = response.imageScanFindings?.findingSeverityCounts;
+  return Boolean(counts) && typeof counts === 'object' && !Array.isArray(counts);
 }
 
 async function main() {

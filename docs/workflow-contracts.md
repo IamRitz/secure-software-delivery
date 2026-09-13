@@ -182,7 +182,7 @@ than configured. Shapes confirmed against the live API (Deploy run
 | Finding ID | `name` | `packageVulnerabilityDetails.vulnerabilityId` |
 | Fix availability | not reported | `fixAvailable`: `"YES"` observed; `"PARTIAL"` → fix-available, `"NO"` → no fix |
 | Normalized `source` | `aws-ecr-basic` | `aws-ecr-enhanced` |
-| Status sequence observed | — | `ScanNotFoundException` (retried) → `PENDING` → `COMPLETE`, ~32s |
+| Status sequence observed | — | `ScanNotFoundException` (retried) → `PENDING` → `COMPLETE`, ~32s. Also observed: `COMPLETE` **before** findings attach (no `findingSeverityCounts`) — treated as not ready and retried, never as clean |
 | IAM beyond `ecr:DescribeImageScanFindings` | none | `inspector2:ListCoverage`, `inspector2:ListFindings` |
 
 Because an enhanced body carries an empty basic `findings` array, a basic-only
