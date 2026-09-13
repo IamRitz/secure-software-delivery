@@ -94,15 +94,101 @@ function awsInvocation(options) {
   };
 }
 
+// ECR has two scanning modes with different DescribeImageScanFindings bodies.
+// Confirmed against the live API (run 34744609758), not the documented schema:
+//
+//   BASIC      imageScanFindings.findings[]            { name, severity }
+//   ENHANCED   imageScanFindings.enhancedFindings[]    Amazon Inspector findings:
+//              packageVulnerabilityDetails.vulnerabilityId, severity,
+//              fixAvailable "YES"|"NO"|"PARTIAL", status, type,
+//              vulnerablePackages[].fixedInVersion, resources[].imageHash
+//
+// A COMPLETE enhanced body ALSO carries `findings: []`. A normalizer that only
+// read `findings` accepted it as a clean basic scan — 1 Critical and 4 High
+// findings normalized to zero, and the image deployed. Two guards now make that
+// structurally impossible:
+//   1. Mode is decided by which array is present, and both populated is ambiguous.
+//   2. The parsed findings must reproduce ECR's own findingSeverityCounts exactly,
+//      in BOTH modes. Any finding the parser did not see is a count mismatch.
+const SEVERITY_MAP = {
+  CRITICAL: 'critical',
+  HIGH: 'high',
+  MEDIUM: 'medium',
+  LOW: 'low',
+  INFORMATIONAL: 'low',
+  UNDEFINED: 'low',
+  // Inspector's not-yet-triaged severity. Mapped up, never down — the same
+  // fail-closed choice as Trivy UNKNOWN and OSV advisories with no CVSS.
+  UNTRIAGED: 'high'
+};
+
+function mappedSeverity(raw, label) {
+  const severity = SEVERITY_MAP[raw];
+  assert(severity, `unsupported ${label} severity ${raw}`);
+  return severity;
+}
+
+// "PARTIAL" means at least one vulnerable package has a fix: the developer can
+// act, so it is treated as fix-available (BLOCK_DEPLOY for Critical/High), never
+// as no-fix (EXCEPTION). Any other value is not guessed at.
+const FIX_AVAILABLE = { YES: true, PARTIAL: true, NO: false };
+
+function normalizeBasicFinding(finding) {
+  assert(typeof finding.name === 'string', 'ECR finding lacks name');
+  return { id: finding.name, severity: mappedSeverity(finding.severity, 'ECR') };
+}
+
+function normalizeEnhancedFinding(finding, imageDigest) {
+  const details = finding.packageVulnerabilityDetails;
+  const id = details?.vulnerabilityId;
+  assert(typeof id === 'string' && id !== '', 'enhanced finding lacks packageVulnerabilityDetails.vulnerabilityId');
+  // Only package vulnerabilities apply to a container image. An unknown type is
+  // a shape this normalizer has not been verified against.
+  assert(
+    finding.type === 'PACKAGE_VULNERABILITY',
+    `enhanced finding ${id} has unsupported type ${finding.type}`
+  );
+  // Observed live: ACTIVE. SUPPRESSED/CLOSED have not been observed through this
+  // API, so rather than silently drop or silently keep them, fail closed.
+  assert(finding.status === 'ACTIVE', `enhanced finding ${id} has unsupported status ${finding.status}`);
+  assert(
+    Object.hasOwn(FIX_AVAILABLE, finding.fixAvailable ?? ''),
+    `enhanced finding ${id} has unsupported fixAvailable ${JSON.stringify(finding.fixAvailable)}`
+  );
+  // Digest binding, one level deeper than imageId: every finding must name the
+  // exact manifest that was polled.
+  const images = (finding.resources ?? []).filter((resource) => resource.type === 'AWS_ECR_CONTAINER_IMAGE');
+  assert(images.length > 0, `enhanced finding ${id} names no AWS_ECR_CONTAINER_IMAGE resource`);
+  for (const resource of images) {
+    const hash = resource.details?.awsEcrContainerImage?.imageHash;
+    assert(hash === imageDigest, `enhanced finding ${id} is for image ${hash}, not ${imageDigest}`);
+  }
+
+  const packages = details.vulnerablePackages ?? [];
+  const names = [...new Set(packages.map((pkg) => pkg.name).filter((name) => typeof name === 'string'))];
+  const fixedVersion = packages
+    .map((pkg) => pkg.fixedInVersion)
+    .find((version) => typeof version === 'string' && version !== '' && version !== 'NotAvailable');
+
+  return {
+    id,
+    severity: mappedSeverity(finding.severity, 'enhanced'),
+    fixAvailable: FIX_AVAILABLE[finding.fixAvailable],
+    ...(names.length > 0 ? { package: names.join(', ') } : {}),
+    ...(fixedVersion ? { fixedVersion } : {}),
+    ...(typeof finding.title === 'string' ? { title: finding.title } : {}),
+    ...(typeof details.sourceUrl === 'string' ? { url: details.sourceUrl } : {})
+  };
+}
+
 export function normalizeEcrResponse(response, options) {
   assert(response.imageScanStatus?.status === 'COMPLETE', 'ECR scan is not complete');
+  const scan = response.imageScanFindings;
+  // A PENDING body (observed live) carries `findings: []` but no severity
+  // counts, so requiring the counts is also what keeps a not-yet-started scan
+  // from ever reading as a complete scan with no findings.
   assert(
-    Array.isArray(response.imageScanFindings?.findings),
-    'ECR response lacks imageScanFindings.findings'
-  );
-  assert(
-    response.imageScanFindings.findingSeverityCounts &&
-      typeof response.imageScanFindings.findingSeverityCounts === 'object',
+    scan?.findingSeverityCounts && typeof scan.findingSeverityCounts === 'object',
     'ECR response lacks findingSeverityCounts'
   );
   assert(typeof response.imageId?.imageDigest === 'string', 'ECR response lacks image digest');
@@ -113,28 +199,43 @@ export function normalizeEcrResponse(response, options) {
     `ECR scan digest ${response.imageId.imageDigest} does not match requested ${options.image_digest}`
   );
 
-  const severityMap = {
-    CRITICAL: 'critical',
-    HIGH: 'high',
-    MEDIUM: 'medium',
-    LOW: 'low',
-    INFORMATIONAL: 'low',
-    UNDEFINED: 'low'
-  };
-  const findings = response.imageScanFindings.findings.map((finding) => {
-    assert(typeof finding.name === 'string', 'ECR finding lacks name');
-    const severity = severityMap[finding.severity];
-    assert(severity, `unsupported ECR severity ${finding.severity}`);
-    return { id: finding.name, severity };
-  });
+  const hasEnhanced = Array.isArray(scan.enhancedFindings);
+  const hasBasic = Array.isArray(scan.findings);
+  assert(hasEnhanced || hasBasic, 'ECR response has neither findings nor enhancedFindings');
+  assert(
+    !(hasEnhanced && hasBasic && scan.enhancedFindings.length > 0 && scan.findings.length > 0),
+    'ECR response has both basic and enhanced findings populated — mode is ambiguous'
+  );
+
+  const enhanced = hasEnhanced;
+  const findings = enhanced
+    ? scan.enhancedFindings.map((finding) => normalizeEnhancedFinding(finding, response.imageId.imageDigest))
+    : scan.findings.map(normalizeBasicFinding);
+
   const severityCounts = findings.reduce((counts, finding) => {
     counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
     return counts;
   }, {});
 
+  // Guard 2: reconcile with ECR's own counts. This is what would have caught the
+  // fail-open — ECR said {CRITICAL:1, HIGH:4, MEDIUM:1}, the parser saw nothing.
+  const reported = {};
+  for (const [rawSeverity, count] of Object.entries(scan.findingSeverityCounts)) {
+    assert(Number.isInteger(count) && count >= 0, `ECR severity count for ${rawSeverity} is not a non-negative integer`);
+    const severity = mappedSeverity(rawSeverity, 'ECR count');
+    reported[severity] = (reported[severity] ?? 0) + count;
+  }
+  for (const severity of ['critical', 'high', 'medium', 'low']) {
+    assert(
+      (reported[severity] ?? 0) === (severityCounts[severity] ?? 0),
+      `ECR reported ${reported[severity] ?? 0} ${severity} finding(s) but ${severityCounts[severity] ?? 0} were parsed ` +
+        `from ${enhanced ? 'enhancedFindings' : 'findings'} — refusing to under-report`
+    );
+  }
+
   return {
     schemaVersion: 1,
-    source: 'aws-ecr-basic',
+    source: enhanced ? 'aws-ecr-enhanced' : 'aws-ecr-basic',
     scanStatus: 'COMPLETE',
     image: {
       repository: options.repository,

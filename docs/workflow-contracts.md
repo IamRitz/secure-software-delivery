@@ -172,6 +172,35 @@ The ECR adapter, and the only workflow on this side of the boundary that holds
 cloud credentials. It pushes, polls the ECR scan **by digest**, and normalizes
 the result. It makes no policy decision.
 
+**Both ECR scanning modes are supported**, detected from the response rather
+than configured. Shapes confirmed against the live API (Deploy run
+`34744609758`), not the documented schema:
+
+| | Basic | Enhanced (Amazon Inspector) |
+| --- | --- | --- |
+| Findings array | `imageScanFindings.findings[]` | `imageScanFindings.enhancedFindings[]` — **and** an empty `findings: []` alongside it |
+| Finding ID | `name` | `packageVulnerabilityDetails.vulnerabilityId` |
+| Fix availability | not reported | `fixAvailable`: `"YES"` observed; `"PARTIAL"` → fix-available, `"NO"` → no fix |
+| Normalized `source` | `aws-ecr-basic` | `aws-ecr-enhanced` |
+| Status sequence observed | — | `ScanNotFoundException` (retried) → `PENDING` → `COMPLETE`, ~32s |
+| IAM beyond `ecr:DescribeImageScanFindings` | none | `inspector2:ListCoverage`, `inspector2:ListFindings` |
+
+Because an enhanced body carries an empty basic `findings` array, a basic-only
+parser reads it as a clean scan — that is exactly how a CRITICAL + 4 HIGH image
+deployed on the first live enhanced run. Two guards now prevent it:
+
+1. **Mode from the arrays present.** Both arrays populated is an ambiguous
+   response and fails closed.
+2. **Count reconciliation, in both modes.** The parsed findings must reproduce
+   ECR's own `findingSeverityCounts` exactly per severity. A finding the parser
+   did not see is a mismatch, never a silent drop. A `PENDING` body has no counts
+   at all, which is also why a not-yet-started scan can never read as a complete
+   scan with no findings.
+
+Enhanced findings are further required to be `type: PACKAGE_VULNERABILITY`,
+`status: ACTIVE`, and to name the polled digest in `resources[].imageHash`;
+anything else is not guessed at.
+
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `image_artifact` | string | **required** | Artifact holding the image tarball. |
