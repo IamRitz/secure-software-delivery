@@ -146,6 +146,15 @@ export function normalizeEcrResponse(response, options) {
   };
 }
 
+// Errors that retrying cannot fix. Deliberately narrow: only authorization
+// failures. Throttling, transient network errors, and "scan not found yet" keep
+// the normal retry path.
+export function isPermanentAwsError(stderr) {
+  return /\b(AccessDeniedException|AccessDenied|UnauthorizedOperation|UnrecognizedClientException|InvalidClientTokenId|ExpiredTokenException)\b|is not authorized to perform/.test(
+    String(stderr ?? '')
+  );
+}
+
 // Every raw DescribeImageScanFindings attempt, persisted as it happens so the
 // record survives a throw. This is evidence, never a gate input: it is how the
 // real response shape (basic vs enhanced) and any permission error are observed
@@ -201,6 +210,14 @@ export async function pollEcrScan(options) {
       // hidden behind forty identical "not ready" lines.
       const firstLine = result.stderr.trim().split('\n')[0] || `exit ${result.code}`;
       console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: not ready (${firstLine})`);
+      // An authorization failure cannot become ready by waiting. Observed live:
+      // with ECR enhanced scanning, DescribeImageScanFindings needs Inspector
+      // permissions, and a role without them spent all 40 attempts (10m17s)
+      // retrying an AccessDenied before failing closed. Fail closed on the first
+      // attempt instead; the outcome is identical, just ten minutes sooner.
+      if (isPermanentAwsError(result.stderr)) {
+        throw new Error(`AWS CLI authorization failure while polling ECR (not retried): ${result.stderr.trim()}`);
+      }
       if (attempt === options.maxAttempts) {
         throw new Error(`AWS CLI failed while polling ECR: ${result.stderr.trim()}`);
       }

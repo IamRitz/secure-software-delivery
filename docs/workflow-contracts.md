@@ -148,10 +148,17 @@ else.
 ```jsonc
 {
   "schemaVersion": 1,
-  "source": "aws-ecr-basic",     // see "known coupling" below
+  "source": "aws-ecr-basic",     // or "aws-ecr-enhanced"; nothing else is admitted
   "scanStatus": "COMPLETE",
   "image": { "repository": "...", "imageTag": "...", "imageDigest": "sha256:..." },
-  "findings": [{ "id": "CVE-...", "severity": "critical|high|medium|low" }],
+  "findings": [{
+    "id": "CVE-...",
+    "severity": "critical|high|medium|low",
+    // aws-ecr-enhanced only, and REQUIRED there: a missing or non-boolean value is
+    // a report-integrity BLOCK_DEPLOY, never a default to "no fix".
+    "fixAvailable": true,
+    "package": "openssl", "fixedVersion": "3.3.2-r0"   // optional context
+  }],
   "severityCounts": { "critical": 0, "high": 0, "medium": 0, "low": 0 }
 }
 ```
@@ -335,12 +342,12 @@ Known couplings to resolve when these move to a central repo:
    `actions/checkout` of the security repo at a pinned SHA into a subdirectory,
    with `toolkit_path` pointing there. The path is already an input, so this is a
    one-line change per workflow rather than a rewrite.
-2. **`image-gate.mjs` still asserts `report.source === 'aws-ecr-basic'`.** The
-   *workflow* `_artifact-gate.yml` is registry-neutral, but the script it calls
-   recognizes exactly one normalized source string. A second collector needs that
-   assertion widened to a set of accepted normalized sources. Left strict rather
-   than speculatively loosened, since a wrong source string today should still
-   fail closed.
+2. **`image-gate.mjs` admits normalized sources by explicit entry.** It now
+   recognizes `aws-ecr-basic` (severity-only) and `aws-ecr-enhanced` (Amazon
+   Inspector, fix-aware) in a `REGISTRY_SOURCES` table; any other value is still a
+   report-integrity BLOCK_DEPLOY. A new collector (another registry, another
+   scanning mode) is admitted by adding an entry that declares whether it is
+   fix-aware — never by loosening the check.
 3. `security/policy.yaml`, `security/semgrep-rules.yml`, and the Semgrep baseline
    are consumer-owned or toolkit-owned depending on how much policy you want
    central. `policy.yaml` is currently resolved from `toolkit_path`, i.e. it

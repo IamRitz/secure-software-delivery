@@ -47,7 +47,7 @@ jobs:
       reproduce_commands: >-
         {"gitleaks":"make secrets","trufflehog":"make secrets","npm-audit":"make dependencies",
         "pip-audit":"make dependencies","osv-scanner":"make dependencies","semgrep":"make sast",
-        "trivy":"make image-gate","ecr-image-scan":"make image-gate"}
+        "trivy":"make image-gate","ecr-image-scan":"make image-gate","ecr-enhanced-scan":"make image-gate"}
       break_glass_enabled: true
       break_glass_notify_url: ${{ vars.BREAK_GLASS_NOTIFY_URL }}
       break_glass_status_url: ${{ vars.BREAK_GLASS_STATUS_URL }}
@@ -211,7 +211,7 @@ jobs:
       image_artifact: application-image-${{ github.sha }}
       gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
       slack_notify_url: ${{ vars.SECURITY_NOTIFY_SLACK_URL }}
-      reproduce_commands: '{"trivy":"make image-gate","ecr-image-scan":"make image-gate"}'
+      reproduce_commands: '{"trivy":"make image-gate","ecr-image-scan":"make image-gate","ecr-enhanced-scan":"make image-gate"}'
 
   image-gate:
     # Stable check name for the pre-push image verdict, mirroring `security-gate`.

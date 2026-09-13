@@ -40,13 +40,15 @@ async function readJson(path) {
 }
 
 function validatePolicy(policy) {
-  // Severity-only keys (ECR basic scan fallback — no fix data).
+  // Severity-only keys: ECR basic scanning (no fix data), and medium/low for
+  // every source.
   for (const severity of ['critical', 'high', 'medium', 'low']) {
     const action = policyAction(policy, `image.${severity}`);
     const expected = ['critical', 'high'].includes(severity) ? 'BLOCK_DEPLOY' : 'LOG';
     assert(action === expected, `image.${severity} must be ${expected} for this POC`);
   }
-  // with_fix/no_fix keys (Trivy pre-push — fix availability known), mirroring the
+  // with_fix/no_fix keys (Trivy pre-push and ECR enhanced/Inspector — fix
+  // availability known), mirroring the
   // dependency model: fixable Critical/High blocks, unfixable is an EXCEPTION.
   for (const [path, expected] of [
     ['image.critical_with_fix', 'BLOCK_DEPLOY'],
@@ -58,9 +60,75 @@ function validatePolicy(policy) {
   }
 }
 
+// Normalized registry report sources this gate recognizes. Adding a value is how a
+// new collector or scanning mode is admitted; an unrecognized source is a
+// report-integrity BLOCK_DEPLOY, never a best-effort parse. The two ECR modes
+// differ in exactly one capability:
+//   aws-ecr-basic    — severity only. Basic scanning reports no fix
+//                      availability, so Critical/High conservatively BLOCK.
+//   aws-ecr-enhanced — Amazon Inspector. Findings carry fix availability, so
+//                      Critical/High use the same with_fix/no_fix split as Trivy.
+// The asymmetry is a scanner limitation, not a policy choice.
+const REGISTRY_SOURCES = {
+  'aws-ecr-basic': { fixAware: false, findingSource: 'ecr-image-scan' },
+  'aws-ecr-enhanced': { fixAware: true, findingSource: 'ecr-enhanced-scan' }
+};
+
+function registryFinding(policy, finding, mode) {
+  assert(typeof finding.id === 'string', 'image finding lacks id');
+  assert(typeof finding.severity === 'string', `image finding ${finding.id} lacks severity`);
+  const severity = finding.severity.toLowerCase();
+  assert(
+    ['critical', 'high', 'medium', 'low'].includes(severity),
+    `image finding ${finding.id} has unsupported severity ${finding.severity}`
+  );
+
+  if (!mode.fixAware) {
+    const policyRule = `image.${severity}`;
+    return {
+      source: mode.findingSource,
+      id: finding.id,
+      severity,
+      action: policyAction(policy, policyRule),
+      policyRule,
+      reason: `${severity} image finding`
+    };
+  }
+
+  // Fix availability is REQUIRED from a fix-aware source. Defaulting a missing
+  // value to "no fix" would silently turn a BLOCK_DEPLOY into an EXCEPTION —
+  // fail-open — so an absent or non-boolean value is a report-integrity failure.
+  assert(
+    typeof finding.fixAvailable === 'boolean',
+    `image finding ${finding.id} lacks a boolean fixAvailable from a fix-aware source`
+  );
+  const suffix = ['critical', 'high'].includes(severity)
+    ? `_${finding.fixAvailable ? 'with_fix' : 'no_fix'}`
+    : '';
+  const policyRule = `image.${severity}${suffix}`;
+  return {
+    source: mode.findingSource,
+    id: finding.id,
+    severity,
+    fixAvailable: finding.fixAvailable,
+    action: policyAction(policy, policyRule),
+    policyRule,
+    reason: `${severity} image finding; fix ${finding.fixAvailable ? 'available' : 'not available'}`,
+    ...(typeof finding.package === 'string' ? { package: finding.package } : {}),
+    ...(typeof finding.fixedVersion === 'string' && finding.fixedVersion !== ''
+      ? { fixedVersion: finding.fixedVersion }
+      : {}),
+    ...(typeof finding.title === 'string' && finding.title !== '' ? { title: finding.title } : {}),
+    ...(typeof finding.url === 'string' ? { url: finding.url } : {})
+  };
+}
+
 function evaluate(policy, report) {
   assert(report?.schemaVersion === 1, 'image scan report has unsupported schemaVersion');
-  assert(report.source === 'aws-ecr-basic', 'image scan report has unsupported source');
+  const mode = Object.hasOwn(REGISTRY_SOURCES, report.source ?? '')
+    ? REGISTRY_SOURCES[report.source]
+    : null;
+  assert(mode, `image scan report has unsupported source ${JSON.stringify(report.source)}`);
   assert(report.scanStatus === 'COMPLETE', 'image scan report status is not COMPLETE');
   assert(typeof report.image?.repository === 'string', 'image scan report lacks repository');
   assert(typeof report.image?.imageTag === 'string', 'image scan report lacks imageTag');
@@ -71,24 +139,7 @@ function evaluate(policy, report) {
     'image scan report lacks severityCounts'
   );
 
-  const findings = report.findings.map((finding) => {
-    assert(typeof finding.id === 'string', 'image finding lacks id');
-    assert(typeof finding.severity === 'string', `image finding ${finding.id} lacks severity`);
-    const severity = finding.severity.toLowerCase();
-    assert(
-      ['critical', 'high', 'medium', 'low'].includes(severity),
-      `image finding ${finding.id} has unsupported severity ${finding.severity}`
-    );
-    const policyRule = `image.${severity}`;
-    return {
-      source: 'ecr-image-scan',
-      id: finding.id,
-      severity,
-      action: policyAction(policy, policyRule),
-      policyRule,
-      reason: `${severity} image finding`
-    };
-  });
+  const findings = report.findings.map((finding) => registryFinding(policy, finding, mode));
 
   const severities = ['critical', 'high', 'medium', 'low'];
   for (const severity of Object.keys(report.severityCounts)) {
@@ -106,9 +157,28 @@ function evaluate(policy, report) {
 
   const blockDeploy = findings.filter((finding) => finding.action === 'BLOCK_DEPLOY').length;
   const log = findings.filter((finding) => finding.action === 'LOG').length;
+
+  if (!mode.fixAware) {
+    // Severity-only source: no EXCEPTION is possible, output unchanged.
+    return {
+      verdict: blockDeploy > 0 ? 'BLOCK_DEPLOY' : 'DEPLOY',
+      summary: { blockDeploy, log },
+      image: report.image,
+      findings
+    };
+  }
+
+  // Fix-aware source: the same three-state verdict as the Trivy pre-push gate.
+  const exceptions = findings.filter((finding) => finding.action === 'EXCEPTION');
   return {
-    verdict: blockDeploy > 0 ? 'BLOCK_DEPLOY' : 'DEPLOY',
-    summary: { blockDeploy, log },
+    verdict:
+      blockDeploy > 0
+        ? 'BLOCK_DEPLOY'
+        : exceptions.length > 0
+          ? 'DEPLOY-WITH-EXCEPTIONS'
+          : 'DEPLOY',
+    summary: { blockDeploy, exception: exceptions.length, log },
+    exceptions,
     image: report.image,
     findings
   };

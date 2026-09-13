@@ -51,7 +51,8 @@ export const DEFAULT_REPRODUCE_COMMANDS = {
   'osv-scanner': 'osv-scanner scan source --recursive .',
   semgrep: 'semgrep scan --config p/owasp-top-ten .',
   trivy: 'trivy image --scanners vuln,secret <image>',
-  'ecr-image-scan': 'trivy image --scanners vuln,secret <image>'
+  'ecr-image-scan': 'trivy image --scanners vuln,secret <image>',
+  'ecr-enhanced-scan': 'trivy image --scanners vuln,secret <image>'
 };
 
 // Parses the SECURITY_REPRODUCE_COMMANDS override. Malformed JSON falls back to
@@ -265,6 +266,25 @@ function classify(finding, context) {
         whatItMeans: meaningText(
           finding,
           `${titleCase(severity)} vulnerability ${finding.id} in image package \`${pkg}\`.`
+        ),
+        howToFix: isException
+          ? EXCEPTION_FIX
+          : finding.fixedVersion
+            ? `Upgrade image package \`${pkg}\` to ${finding.fixedVersion}, or bump the base image to a build that ships the fixed package.`
+            : `Upgrade image package \`${pkg}\` to a fixed version, or bump the base image to a build that ships the fix.`
+      };
+    }
+    case 'ecr-enhanced-scan': {
+      // Amazon Inspector (ECR enhanced scanning) reports fix availability, so a
+      // registry finding can be an EXCEPTION exactly like a Trivy one.
+      const pkg = finding.package || 'the affected package';
+      return {
+        ...base,
+        kind: 'image-ecr-enhanced',
+        title: `${titleCase(severity)}-severity vulnerability in image (${finding.id})`,
+        whatItMeans: meaningText(
+          finding,
+          `Amazon Inspector reported ${finding.id} at ${severity} severity in the pushed image.`
         ),
         howToFix: isException
           ? EXCEPTION_FIX
