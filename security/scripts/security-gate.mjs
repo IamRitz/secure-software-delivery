@@ -635,7 +635,7 @@ export function summarizeIntegrity(findings) {
   };
 }
 
-function markBreakGlassEligibility(policy, findings) {
+export function markBreakGlassEligibility(policy, findings) {
   for (const finding of findings) {
     let policyPath;
     if (['sast.critical_new', 'sast.high_new'].includes(finding.policyRule)) {

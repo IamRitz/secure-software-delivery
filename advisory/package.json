@@ -1,0 +1,16 @@
+{
+  "name": "advisory-finding-explainer",
+  "version": "0.1.0",
+  "description": "Shadow-mode POC: Lambda that explains allowlisted gate findings. Advisory only; gates nothing.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.125.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-secrets-manager": "3.1131.0"
+  }
+}

@@ -1,0 +1,97 @@
+name: Advisory explainer (reusable, shadow mode)
+
+# ADVISORY ONLY — this workflow can never gate anything.
+#
+#   * The job is `continue-on-error: true` and so is every step that can fail.
+#   * It declares no outputs, and no job may `needs:` it (asserted in
+#     test/advisory-explainer.test.js).
+#   * Shadow mode: the model's text goes to this job's log only. The
+#     authoritative, deterministic findings comment is posted by notify.mjs in
+#     `_source-security.yml`, independently of this workflow.
+#
+# CREDENTIALS: `id-token: write` exists for ONE purpose — exchanging the job's
+# OIDC token for a role that may call lambda:InvokeFunction on the
+# advisory-finding-explainer function and nothing else. No deploy or push role,
+# no break-glass secret, no model API key (that lives in Secrets Manager behind
+# the Lambda), and no `pull-requests: write` while in shadow mode.
+
+on:
+  workflow_call:
+    inputs:
+      role_arn:
+        description: Invoke-only OIDC role for the advisory Lambda. Empty skips the job cleanly.
+        type: string
+        default: ''
+      function_name:
+        type: string
+        default: advisory-finding-explainer
+      aws_region:
+        type: string
+        default: us-east-1
+      node_version:
+        type: string
+        default: '22.23.2'
+
+permissions:
+  contents: read
+
+jobs:
+  explain:
+    name: advisory-explainer (shadow, non-gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out the advisory client
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager-cache: false
+
+      - name: Download the decided source gate result
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: security-gate-results
+          path: reports
+
+      - name: Check whether the explainer is configured
+        id: configured
+        continue-on-error: true
+        env:
+          ROLE_ARN: ${{ inputs.role_arn }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::notice::ADVISORY_EXPLAINER_ROLE_ARN is not set; advisory explainer skipped."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Exchange the OIDC token for the invoke-only role
+        if: ${{ steps.configured.outputs.enabled == 'true' }}
+        id: aws
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+          role-duration-seconds: 900
+          role-session-name: advisory-explainer-${{ github.run_id }}
+
+      - name: Explain findings (shadow mode, log only)
+        if: ${{ steps.aws.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          ADVISORY_FUNCTION_NAME: ${{ inputs.function_name }}
+        run: node advisory/client.mjs --gate reports/security-gate.json

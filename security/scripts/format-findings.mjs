@@ -14,6 +14,8 @@
 // surfaced when the gate captured them and degrade gracefully when it did not,
 // so a minimal finding still renders a useful, plain-language card.
 
+import { BREAK_GLASS_TEXT, policyAdvisory } from './policy-advisories.mjs';
+
 export const PR_COMMENT_MARKER = '<!-- security-gate-findings -->';
 
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
@@ -484,11 +486,47 @@ export function renderMarkdown(report, { includeMarker = false } = {}) {
   const loggedSection = renderGroupMarkdown('📝 Logged (non-blocking)', logged, { collapseOver: 5 });
   if (loggedSection) blocks.push(loggedSection);
 
+  const guideSection = renderPolicyGuideMarkdown(report.cards);
+  if (guideSection) blocks.push(guideSection);
+
   if (report.cards.length === 0) {
     blocks.push('No findings. 🎉');
   }
 
   return blocks.filter(Boolean).join('\n\n') + '\n';
+}
+
+// Tier 0 policy guide: one fixed explanation per distinct policy key that
+// blocked or passed as an exception. Headed and quoted so it is visibly the
+// reviewed, deterministic part of the comment — distinct from anything
+// model-generated that may be added later.
+export const POLICY_GUIDE_HEADING = '### 📘 Policy guide — fixed, reviewed text (not AI-generated)';
+
+function renderPolicyGuideMarkdown(cards) {
+  const keys = [
+    ...new Set(sortCards(cards.filter((c) => c.action !== 'LOG')).map((c) => c.policyRule))
+  ].filter(Boolean);
+  if (keys.length === 0) {
+    return '';
+  }
+  const entries = keys.map((key) => {
+    const advisory = policyAdvisory(key);
+    if (!advisory) {
+      return `> **\`${key}\`** — no policy guide text exists for this key yet.`;
+    }
+    const lines = [
+      `> **\`${key}\`** — ${advisory.meaning}`,
+      '>',
+      `> _Why:_ ${advisory.why}`,
+      '>',
+      `> ${BREAK_GLASS_TEXT[advisory.breakGlass]}`
+    ];
+    if (advisory.remedy) {
+      lines.push('>', `> _Required remedy:_ ${advisory.remedy}`);
+    }
+    return lines.join('\n');
+  });
+  return `${POLICY_GUIDE_HEADING}\n\n${entries.join('\n\n')}`;
 }
 
 // ---- Slack Block Kit renderer (concise: what/where/how many + link) ---------
