@@ -146,20 +146,46 @@ export function normalizeEcrResponse(response, options) {
   };
 }
 
+// Every raw DescribeImageScanFindings attempt, persisted as it happens so the
+// record survives a throw. This is evidence, never a gate input: it is how the
+// real response shape (basic vs enhanced) and any permission error are observed
+// empirically, and it is the raw registry side of the Trivy comparison.
+async function recordRawAttempts(path, attempts) {
+  if (!path) {
+    return;
+  }
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({ attempts }, null, 2)}\n`);
+}
+
 export async function pollEcrScan(options) {
   assert(Number.isInteger(options.maxAttempts) && options.maxAttempts > 0, 'invalid max attempts');
   assert(Number.isFinite(options.delaySeconds) && options.delaySeconds >= 0, 'invalid delay');
   const invocation = awsInvocation(options);
+  const attempts = [];
 
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     const result = await run(invocation.command, invocation.arguments_, invocation.environment);
+    const record = {
+      attempt,
+      at: new Date().toISOString(),
+      exitCode: result.code,
+      stderr: result.stderr.trim().slice(0, 4000) || null,
+      response: null
+    };
+    attempts.push(record);
+
     if (result.code === 0) {
       let response;
       try {
         response = JSON.parse(result.stdout);
       } catch (error) {
+        record.rawStdout = result.stdout.slice(0, 4000);
+        await recordRawAttempts(options.raw_output, attempts);
         throw new Error(`AWS CLI returned malformed JSON: ${error.message}`, { cause: error });
       }
+      record.response = response;
+      await recordRawAttempts(options.raw_output, attempts);
       const status = response.imageScanStatus?.status;
       console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: ${status ?? 'UNKNOWN'}`);
       if (status === 'COMPLETE') {
@@ -169,7 +195,12 @@ export async function pollEcrScan(options) {
         throw new Error(`ECR image scan ended with status ${status ?? 'UNKNOWN'}`);
       }
     } else {
-      console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: not ready`);
+      await recordRawAttempts(options.raw_output, attempts);
+      // Surface the CLI error on every attempt, not only the last: a permanent
+      // error (e.g. a missing permission) must be visible immediately rather than
+      // hidden behind forty identical "not ready" lines.
+      const firstLine = result.stderr.trim().split('\n')[0] || `exit ${result.code}`;
+      console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: not ready (${firstLine})`);
       if (attempt === options.maxAttempts) {
         throw new Error(`AWS CLI failed while polling ECR: ${result.stderr.trim()}`);
       }
