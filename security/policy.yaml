@@ -41,8 +41,10 @@ image:
   high_with_fix: BLOCK_DEPLOY
   critical_no_fix: EXCEPTION
   high_no_fix: EXCEPTION
-  # ECR basic scanning reports no fix availability, so it falls back to
-  # severity-only and conservatively blocks all Critical/High.
+  # ECR BASIC scanning reports no fix availability, so it falls back to
+  # severity-only and conservatively blocks all Critical/High. ECR ENHANCED
+  # scanning (Amazon Inspector) does report it, and uses the with_fix/no_fix keys
+  # above exactly like Trivy. The asymmetry is a scanner limitation.
   critical: BLOCK_DEPLOY
   high: BLOCK_DEPLOY
   medium: LOG
