@@ -104,7 +104,7 @@ pipeline {
                             docker.image('trufflesecurity/trufflehog@sha256:deb2af10659a488a14d262a323addcde099d99827a1cf1dc4e93c17915c39f08').inside('--entrypoint=') {
                                 sh 'trufflehog git "file://$WORKSPACE" --json --no-update ${TRUFFLEHOG_SINCE} --exclude-paths=.trufflehog-exclude-paths.txt --results=verified,unverified,unknown --no-fail --fail-on-scan-errors > reports/trufflehog.raw.jsonl'
                             }
-                            docker.image('node:22.23.2-alpine3.24').inside {
+                            docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                                 sh 'node security/scripts/normalize-trufflehog.mjs reports/trufflehog.raw.jsonl reports/trufflehog.json'
                             }
                         }
@@ -120,7 +120,7 @@ pipeline {
                     steps {
                         sh 'mkdir -p reports'
                         script {
-                            docker.image('node:22.23.2-alpine3.24').inside {
+                            docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                                 sh '''
                                     set +e
                                     npm audit --json --package-lock-only > reports/npm-audit.json
@@ -152,7 +152,7 @@ pipeline {
                                     echo "OSV-Scanner exit code: $osv_status (security gate evaluates findings)"
                                 '''
                             }
-                            docker.image('node:22.23.2-alpine3.24').inside {
+                            docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                                 sh 'node security/scripts/validate-dependency-report.mjs osv-scanner reports/osv-scanner.json'
                             }
                         }
@@ -181,7 +181,7 @@ pipeline {
                                         src
                                 '''
                             }
-                            docker.image('node:22.23.2-alpine3.24').inside {
+                            docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                                 sh 'node security/scripts/validate-semgrep-report.mjs reports/semgrep.json'
                             }
                             echo 'Semgrep report is ready for the security gate'
@@ -199,7 +199,7 @@ pipeline {
         stage('Security Gate') {
             steps {
                 script {
-                    docker.image('node:22.23.2-alpine3.24').inside {
+                    docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                         def gateStatus = sh(
                             script: 'node security/scripts/security-gate.mjs',
                             returnStatus: true
@@ -243,7 +243,7 @@ pipeline {
         stage('Install') {
             agent {
                 docker {
-                    image 'node:22.23.2-alpine3.24'
+                    image 'node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2'
                     // Run as root so the pinned npm can be installed globally; the
                     // resulting node_modules stays world-readable for the Lint/Test
                     // stages, which only read it.
@@ -263,7 +263,7 @@ pipeline {
         stage('Lint') {
             agent {
                 docker {
-                    image 'node:22.23.2-alpine3.24'
+                    image 'node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2'
                     reuseNode true
                 }
             }
@@ -275,7 +275,7 @@ pipeline {
         stage('Test') {
             agent {
                 docker {
-                    image 'node:22.23.2-alpine3.24'
+                    image 'node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2'
                     reuseNode true
                 }
             }
@@ -399,7 +399,7 @@ pipeline {
                             "AWS_DEFAULT_REGION=${params.AWS_REGION}",
                             "ECR_REPOSITORY=${params.ECR_REPOSITORY}"
                         ]) {
-                            docker.image('node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5').inside(
+                            docker.image('node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553').inside(
                                 "--group-add ${dockerSocketGroup} " +
                                 '-v /var/run/docker.sock:/var/run/docker.sock ' +
                                 '-v /usr/bin/docker:/usr/bin/docker:ro'
@@ -438,7 +438,7 @@ pipeline {
             }
             steps {
                 script {
-                    docker.image('node:22.23.2-alpine3.24').inside {
+                    docker.image('node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2').inside {
                         sh 'node security/scripts/image-gate.mjs'
                     }
                 }
@@ -480,7 +480,7 @@ pipeline {
                             "EC2_INSTANCE_ID=${params.EC2_INSTANCE_ID}",
                             "EC2_APP_PORT=${params.EC2_APP_PORT ?: '3000'}"
                         ]) {
-                            docker.image('node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5').inside(
+                            docker.image('node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553').inside(
                                 "--group-add ${dockerSocketGroup} " +
                                 '-v /var/run/docker.sock:/var/run/docker.sock ' +
                                 '-v /usr/bin/docker:/usr/bin/docker:ro'

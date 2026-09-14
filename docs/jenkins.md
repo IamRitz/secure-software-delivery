@@ -2,7 +2,7 @@
 
 The declarative pipeline provides the Jenkins equivalent of the GitHub Actions
 checks. Application stages use the exact runtime image used by the application
-container: `node:22.23.2-alpine3.24`.
+container: `node:24.21.0-alpine3.24`.
 
 ## Pipeline stages
 
@@ -36,11 +36,11 @@ container: `node:22.23.2-alpine3.24`.
     shared `ssm-deploy.mjs` — an EC2 deploy over AWS Systems Manager
     (`aws ssm send-command`), not ECS and not SSH.
 
-The image-scan polling helper runs in an exact-version, digest-pinned Node 22
+The image-scan polling helper runs in an exact-version, digest-pinned Node 24.21.0
 slim container with the controller's Docker client and socket mounted so it
 can invoke the digest-pinned AWS CLI container. This avoids installing tooling
 while AWS credentials are present. Application execution remains on the exact
-`node:22.23.2-alpine3.24` runtime used by the Dockerfile and GitHub checks.
+`node:24.21.0-alpine3.24` runtime used by the Dockerfile and GitHub checks.
 
 The shell steps use Jenkins' default fail-fast behavior. A non-zero result from
 the gate, install, lint, or test fails its stage and the build; there is no
@@ -98,11 +98,11 @@ The stage commands can be reproduced locally in the pinned agent image:
 
 ```sh
 docker run --rm -v "$PWD:/workspace" -w /workspace \
-  node:22.23.2-alpine3.24 npm ci
+  node:24.21.0-alpine3.24 npm ci
 docker run --rm -v "$PWD:/workspace" -w /workspace \
-  node:22.23.2-alpine3.24 npm run lint
+  node:24.21.0-alpine3.24 npm run lint
 docker run --rm -v "$PWD:/workspace" -w /workspace \
-  node:22.23.2-alpine3.24 npm test
+  node:24.21.0-alpine3.24 npm test
 ```
 
 The Phase 4 baseline was executed by a JCasC-provisioned throwaway Jenkins

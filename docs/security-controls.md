@@ -256,11 +256,13 @@ gate reports through the two dedicated `make demo-*` targets.
 
 ## Container image scanning
 
-ECR basic scan-on-push inspects operating-system packages in the built image.
-This must remain separate from lockfile dependency scanning: the base image's
-Alpine packages do not appear in `package-lock.json`, so npm audit and
-OSV-Scanner cannot see them. Amazon Inspector enhanced continuous scanning is
-a documented production upgrade; basic scanning is sufficient for this POC.
+ECR scan-on-push inspects the built image. This must remain separate from
+lockfile dependency scanning: the base image's Alpine packages do not appear in
+`package-lock.json`, so npm audit and OSV-Scanner cannot see them. The demo
+repository uses ECR **enhanced** scanning (Amazon Inspector);
+`poll-ecr-scan.mjs` still normalizes basic-scanning responses for registries
+configured that way. Trivy scans the same image before push. Why both are
+kept is covered in [Two image scanners, two methodologies](#two-image-scanners-two-methodologies).
 
 `poll-ecr-scan.mjs` polls `describe-image-scan-findings` and writes normalized
 JSON without making the deploy decision. `image-gate.mjs` applies the shared
@@ -280,3 +282,67 @@ as the fix) produced a clean scan, the gate opened, and the EC2/SSM deploy ran.
 None of these findings are visible to secret, dependency, or SAST scanning —
 they live only in the built image, which is exactly why image scanning is a
 distinct, post-push stage.
+
+### Two image scanners, two methodologies
+
+Trivy (pre-push) and Amazon Inspector (ECR enhanced, post-push) are both kept.
+They detect vulnerabilities in different ways, and **neither is a superset of the
+other**.
+
+| | Trivy | Amazon Inspector |
+| --- | --- | --- |
+| Method | **Content verification:** reads the package databases actually installed in the image (apk, `node_modules`) | **Reference inference:** infers packages and versions from manifests, lockfiles, and embedded references such as header files; it does not verify installed contents |
+| Reach | Only what a package database describes; no analyzer for libraries statically linked into a binary | Reaches references a package database does not describe, such as a library compiled into a binary |
+| Precision | High for what it can see | Weaker: findings can refer to packages that are not installed, versions can be misread, and results can drift |
+
+**Both behaviours were observed on this project's image.**
+
+- **Inspector made a real catch that Trivy could not.** On
+  `node:22.23.2-alpine3.24`, the two scanners had zero overlapping findings. Trivy
+  reported nothing, correctly: Alpine's `libssl3`/`libcrypto3` were `3.5.8-r0`.
+  Inspector found OpenSSL 3.5.7 statically linked into the `node` binary through
+  its bundled `opensslv.h` headers (1 Critical, 4 High, 1 Medium at deploy run
+  34744609758). `process.versions.openssl` confirmed 3.5.7. Fixed by moving to
+  Node 24.21.0 (see `docs/gating.md`).
+- **Finding drift on an unchanged digest.** That same image,
+  `sha256:7bb2656c…`, reported **1 Critical, 4 High, 1 Medium (6)** on
+  2026-09-13 and **2 Critical, 7 High, 1 Medium (10)** on 2026-09-14. The image
+  did not change. Continuous rescanning against newly published advisories may
+  explain part of this; the cause was not established. A deploy-time verdict is
+  a point-in-time answer, not a stable property of the image.
+- **Wrong remediation data.** All six original findings reported
+  `fixedInVersion: 4.0.2`, a different major version. OpenSSL's advisory fixes
+  them on the 3.5 branch in 3.5.8, and Node 24.21.0's bundled 3.5.8 cleared them
+  (0 Inspector findings on the deployed digest `sha256:d19c67f2…`).
+- **Ambiguous response shape.** A clean enhanced scan and a scan whose findings
+  have not attached yet return the identical ECR body (runs 34809100547 and
+  34745111774). `poll-ecr-scan.mjs` confirms clean results with Inspector
+  directly rather than trusting the body.
+
+Public reports describe the same reference-inference mechanism:
+
+- false positives for `pom.xml` dependencies with `provided` scope, meaning
+  packages that are not in the image at all
+- resolved versions misread from `yarn.lock`
+- an enhanced-scanning regression in February 2025, confirmed by AWS Support,
+  that produced transitive-dependency false positives
+- cases where basic scanning reported Criticals that enhanced scanning missed
+
+Those reports were not reproduced in this project; the observations above were.
+
+**How this affects policy interpretation.** For Critical/High findings from the
+enhanced path, `image-gate.mjs` applies `with_fix` → `BLOCK_DEPLOY` vs
+`no_fix` → `EXCEPTION`. The split is decided by Inspector's **`fixAvailable`**
+(`YES`/`PARTIAL` = fixable, `NO` = no fix). **`fixedInVersion`** is carried into
+reports and notifications for developers but does not decide the verdict. Both
+come from Inspector's remediation data, which has been observed wrong, so treat
+both as **advisory**:
+
+- Verify a suggested fix version against the upstream advisory before acting
+  on it. `4.0.2` would have sent a developer to an unnecessary major-version
+  upgrade.
+- An Inspector `EXCEPTION` (`fixAvailable: NO`) is a claim to verify upstream
+  before accepting it, not proof that no fix exists. A wrong `NO` fails open: it
+  would pass a fixable Critical as a tracked exception.
+- An Inspector `BLOCK_DEPLOY` stays a block. A wrong `YES` fails closed, and the
+  finding may be real even when its remediation data is not.

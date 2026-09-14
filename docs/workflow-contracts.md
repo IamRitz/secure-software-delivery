@@ -45,7 +45,7 @@ scripts, independent of the consumer repo's own language.
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `gate_mode` | string | `enforce` | `enforce`: a BLOCK fails the gate job. `log-only`: everything is reported, nothing fails, and no Slack alert is sent. |
-| `node_version` | string | `22.23.2` | Node used to run the gate scripts. |
+| `node_version` | string | `24.21.0` | Node used to run the gate scripts. |
 | `toolkit_path` | string | `security` | Directory holding `policy.yaml` and `scripts/` in the checkout. |
 | `semgrep_configs` | string | `p/owasp-top-ten` | Whitespace/newline separated Semgrep configs. Add language packs and local rule files per repo. |
 | `semgrep_paths` | string | `.` | Whitespace separated paths Semgrep scans. |
@@ -106,7 +106,7 @@ registry.
 | `image_artifact` | string | **required** | Artifact holding the image tarball. |
 | `image_tarball` | string | `application-image.tar` | File name inside that artifact. |
 | `gate_mode` | string | `enforce` | As above. |
-| `node_version` | string | `22.23.2` | |
+| `node_version` | string | `24.21.0` | |
 | `toolkit_path` | string | `security` | |
 | `reproduce_commands` | string (JSON) | `''` | |
 | `slack_notify_url` | string | `''` | |
@@ -131,7 +131,7 @@ no secrets.
 | `report_path` | string | `reports/registry-image-scan.json` | Path of the report once downloaded into `reports/`. |
 | `expected_digest` | string | **required** | Manifest digest the report must describe; a mismatch fails closed. |
 | `gate_mode` | string | `enforce` | As above. |
-| `node_version` | string | `22.23.2` | |
+| `node_version` | string | `24.21.0` | |
 | `toolkit_path` | string | `security` | |
 | `reproduce_commands` | string (JSON) | `''` | |
 | `slack_notify_url` | string | `''` | |
@@ -212,7 +212,7 @@ anything else is not guessed at.
 | `ecr_repository` | string | **required** | |
 | `immutable_tag` | string | **required** | Conventionally the commit SHA. |
 | `extra_tags` | string | `''` | Whitespace separated additional mutable tags. |
-| `node_version` | string | `22.23.2` | |
+| `node_version` | string | `24.21.0` | |
 | `toolkit_path` | string | `security` | |
 | `report_artifact` | string | `registry-image-scan` | Artifact name for the normalized report. |
 

@@ -32,6 +32,61 @@ to a single immutable digest so a mutable tag can never be swapped in between:
 5. **gate → deploy:** `deploy` runs `ssm-deploy.mjs --image-digest`, so the
    instance `docker pull`s `registry/repo@sha256:…`, never a tag.
 
+## Local operator identity: never the root user
+
+**Use the account root user only for account-level operations that genuinely
+require it**, such as changing account settings or the root credentials,
+restoring IAM access after a lockout, or closing the account. Root cannot be
+scoped, cannot have a permission boundary, and cannot be safely revoked if
+leaked, so it is never used for daily work, CI, or the demo. The root user has
+MFA enabled and no access keys (confirmed 2026-09-14).
+
+Creating the identity below was a legitimate root task. Manual operations
+against the demo (Inspector queries, reading ECR, checking the instance over SSM)
+use the IAM user **`ssd-operator`**, configured locally as both the
+`ssd-operator` profile and the default profile. It has no managed policies, only
+this inline policy (`ssd-operator-least-privilege`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Sid": "InspectorRead", "Effect": "Allow",
+      "Action": ["inspector2:ListFindings", "inspector2:ListCoverage"], "Resource": "*" },
+    { "Sid": "SsmRunShellOnDemoInstanceOnly", "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<EC2_INSTANCE_ID>",
+        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript"
+      ] },
+    { "Sid": "SsmReadCommandResults", "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation", "Resource": "*" },
+    { "Sid": "EcrAuthToken", "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
+    { "Sid": "EcrReadDemoRepository", "Effect": "Allow",
+      "Action": [
+        "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:ListImages",
+        "ecr:DescribeImageScanFindings", "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"
+      ],
+      "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/secure-software-delivery" }
+  ]
+}
+```
+
+Verified 2026-09-14: `sts get-caller-identity` reports `user/ssd-operator`, not
+`:root`. Inspector `list-findings`/`list-coverage`, ECR `describe-images` and
+`describe-image-scan-findings`, and `ssm send-command` + `get-command-invocation`
+on the demo instance succeed. `iam list-users`, `ec2 describe-instances`,
+`s3 ls`, an unscoped `ecr describe-repositories`, and `send-command` with
+`AWS-RunPowerShellScript` are denied.
+
+**`ssm:SendCommand` is not read-only.** `AWS-RunShellScript` runs arbitrary
+shell as root on the instance. The policy confines it to the one demo instance
+and that one document, so treat this key as able to change that instance, and
+nothing else. It is a long-lived access key: rotate it after the demo, and
+delete the user along with the demo environment.
+
 ## GitHub Actions: OIDC, not access keys
 
 1. Add the GitHub OIDC provider in IAM with URL

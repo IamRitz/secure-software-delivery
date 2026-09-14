@@ -9,9 +9,28 @@
 # (they are npm-managed, not apk-managed), so the durable fix is to not ship
 # npm in the runtime image at all.
 
-# Node 24.21.0 bundles OpenSSL 3.5.8, verified 2026-09-13 by running
-# node -p process.versions.openssl in this digest. Node 22.23.2 bundles
-# vulnerable OpenSSL 3.5.7 statically; apk upgrade cannot replace it.
+# ---- Why Node 24, not Node 22: a forced move, not a preference -------------
+# The base was node:22.23.2-alpine3.24. Amazon Inspector flagged OpenSSL 3.5.7
+# statically linked INTO the node binary (1 Critical, 4 High, 1 Medium). That
+# copy is separate from Alpine's libssl3/libcrypto3 packages, which were already
+# 3.5.8-r0. `apk upgrade` cannot patch it; only a Node release that bundles a
+# patched OpenSSL can.
+#
+# No Node 22.x release bundles OpenSSL >= 3.5.8: 22.23.2 is the latest and still
+# ships 3.5.7, on both alpine3.24 and bookworm-slim. Node 24.21.0 is the first
+# 24.x to bundle 3.5.8 (24.20.0 and earlier ship 3.5.7).
+#
+# Verified by running the images, not by reading changelogs:
+#   docker run --rm <image> node -p process.versions.openssl
+#   node:22.23.2-alpine3.24        -> 3.5.7
+#   node:22-bookworm-slim (22.23.2) -> 3.5.7
+#   the pinned 24.21.0 digest below -> 3.5.8
+# Checked 2026-09-13, re-checked 2026-09-14.
+#
+# Moving back to a Node 22.x LTS line is preferable if a 22.x release ever ships
+# a patched OpenSSL. Re-run the check above on that release's digest first. CI
+# and Jenkins pin the same Node version as this image; move them together.
+# Details: docs/gating.md, "Bundled OpenSSL remediation".
 
 # ---- builder: needs npm to install the app's production dependencies --------
 FROM node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2 AS builder
