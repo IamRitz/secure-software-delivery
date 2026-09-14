@@ -21,10 +21,8 @@ import {
   finalizeDecision,
   buildAuditComment
 } from '../../security/scripts/break-glass-decision.mjs';
-import { ELIGIBLE_POLICY_RULES } from './config.mjs';
 import { buildApprovalMessage, buildDecisionUpdate, ephemeral } from './messages.mjs';
-
-const GATE_DIGEST = /^[a-f0-9]{64}$/i;
+import { createPendingRequest, validateNotifyPayload } from './request.mjs';
 
 function timingSafeEqualString(a, b) {
   const bufferA = Buffer.from(String(a), 'utf8');
@@ -44,22 +42,6 @@ function captureRawBody(req, _res, next) {
     next();
   });
   req.on('error', next);
-}
-
-function validateNotifyPayload(payload) {
-  if (!payload || payload.schemaVersion !== 1) throw new Error('unsupported schema');
-  if (!Array.isArray(payload.findings) || payload.findings.length === 0) {
-    throw new Error('invalid or empty finding payload');
-  }
-  if (!payload.findings.every((f) => f.action === 'BLOCK' && ELIGIBLE_POLICY_RULES.has(f.policyRule))) {
-    throw new Error('payload contains a non-overridable finding');
-  }
-  if (!GATE_DIGEST.test(payload.gateDigest || '')) throw new Error('invalid gate digest');
-  const context = payload.context;
-  if (!context || typeof context.repository !== 'string' || !context.repository.includes('/')) {
-    throw new Error('repository is required');
-  }
-  if (!/^\d+$/.test(String(context.pullRequest ?? ''))) throw new Error('pull request number is required');
 }
 
 export function createBreakGlassApp({
@@ -95,20 +77,15 @@ export function createBreakGlassApp({
       return res.status(400).json({ error: error.message });
     }
 
-    const createdAt = now();
-    const timeout = Math.min(
-      Math.max(Number(payload.timeoutSeconds) || config.defaultTimeoutSeconds, config.minTimeoutSeconds),
-      config.maxTimeoutSeconds
-    );
-    const request = {
-      requestId: globalThis.crypto.randomUUID(),
-      gateDigest: payload.gateDigest,
-      status: 'pending',
-      createdAt: createdAt.toISOString(),
-      expiresAt: new Date(createdAt.getTime() + timeout * 1000).toISOString(),
-      context: payload.context,
-      findings: payload.findings
-    };
+    const request = createPendingRequest(payload, {
+      now: now(),
+      randomUUID: () => globalThis.crypto.randomUUID(),
+      limits: {
+        defaultSeconds: config.defaultTimeoutSeconds,
+        minSeconds: config.minTimeoutSeconds,
+        maxSeconds: config.maxTimeoutSeconds
+      }
+    });
 
     // Store the pending request before posting so a fast click can still find it,
     // then post to Slack. If Slack rejects, roll the request back and fail closed.

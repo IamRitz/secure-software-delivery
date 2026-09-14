@@ -1,0 +1,206 @@
+name: Break-glass Lambda smoke
+
+# MIGRATION-ONLY. Proves the n8n -> Lambda break-glass broker end to end from a
+# real PR context before anything is cut over. It does NOT gate merges and does
+# not touch _source-security.yml or security.yml, which keep calling n8n until
+# an explicit cutover.
+#
+# oidc-invoke  GitHub OIDC -> github-actions-break-glass-invoker -> break-glass-ci.
+#              Uses NO repository secret. Runs the real notify/poll scripts with
+#              BREAK_GLASS_TRANSPORT=lambda on a synthetic eligible BLOCK. Click
+#              Approve in the test Slack channel -> green; Deny or no click -> red
+#              (CI stays blocked).
+# parity       Opt-in (vars.BREAK_GLASS_PARITY == 'true'). Sends the SAME gate to
+#              n8n and to Lambda, waits for both, and fails unless the verdicts
+#              match. Needs the n8n shared secret, which is why it is a separate job.
+#
+# SECURITY: `pull_request`, never `pull_request_target`; fork PRs get no OIDC
+# token and are skipped outright.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - server/break-glass/**
+      - security/scripts/break-glass-*.mjs
+      - .github/workflows/break-glass-lambda-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  oidc-invoke:
+    name: OIDC invoke (no shared secret)
+    if: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BREAK_GLASS_TRANSPORT: lambda
+      BREAK_GLASS_FUNCTION_NAME: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION || 'break-glass-ci' }}
+      BREAK_GLASS_TIMEOUT_SECONDS: ${{ vars.BREAK_GLASS_SMOKE_TIMEOUT_SECONDS || '300' }}
+      BREAK_GLASS_POLL_INTERVAL_MS: '5000'
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+
+      - name: Assert no break-glass shared secret is present
+        run: |
+          if [ -n "${BREAK_GLASS_SHARED_SECRET:-}" ]; then
+            echo "A shared secret reached the Lambda-path job; the OIDC path must not need one." >&2
+            exit 1
+          fi
+          echo "No BREAK_GLASS_SHARED_SECRET in this job."
+
+      - name: Show the OIDC claims AWS will evaluate (claims only, never the token)
+        run: |
+          node --input-type=module -e '
+            const url = `${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com`;
+            const res = await fetch(url, { headers: { authorization: `bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
+            const { value } = await res.json();
+            const claims = JSON.parse(Buffer.from(value.split(".")[1], "base64url").toString());
+            const { sub, aud, repository, ref, event_name, job_workflow_ref } = claims;
+            console.log(JSON.stringify({ sub, aud, repository, ref, event_name, job_workflow_ref }, null, 2));
+          ' --input-type=module
+
+      - name: Build a synthetic eligible BLOCK (fixtures only, no vulnerable code)
+        run: |
+          mkdir -p reports
+          cp security/scripts/__fixtures__/clean/*.json reports/
+          cp security/scripts/__fixtures__/new-high-sast/semgrep.json reports/semgrep.json
+          node security/scripts/security-gate.mjs \
+            --policy security/policy.yaml \
+            --baseline security/baseline/semgrep-baseline.json || true
+          node security/scripts/break-glass-notify.mjs --check-only
+
+      - name: Assume the break-glass invoker role (OIDC)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: break-glass-smoke
+
+      - name: Prove the invoker role can reach nothing but break-glass-ci
+        run: |
+          set +e
+          expect_denied() {
+            out="$("$@" 2>&1)"; code=$?
+            if [ $code -eq 0 ] || ! grep -qE 'AccessDenied|not authorized' <<<"$out"; then
+              echo "EXPECTED AccessDenied, got exit $code: $out" >&2; exit 1
+            fi
+            echo "denied as expected: $*"
+          }
+          expect_denied aws lambda invoke --function-name break-glass-interactions --payload '{}' /dev/null
+          expect_denied aws dynamodb describe-table --table-name break-glass-requests
+          expect_denied aws secretsmanager get-secret-value --secret-id break-glass/slack-signing-secret
+          expect_denied aws lambda get-function --function-name "$BREAK_GLASS_FUNCTION_NAME"
+
+      - name: Request break-glass decision (direct Lambda invoke)
+        env:
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_COMMIT_SHA: ${{ github.sha }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_PULL_REQUEST: ${{ github.event.pull_request.number }}
+          CI_SYSTEM: github-actions-lambda-smoke
+        run: node security/scripts/break-glass-notify.mjs
+
+      - name: Wait for verified break-glass decision (fails closed on deny/timeout)
+        run: node security/scripts/break-glass-poll.mjs
+
+      - name: Show request and decision
+        if: always()
+        run: cat reports/break-glass-request.json reports/break-glass-decision.json 2>/dev/null || true
+
+  parity:
+    name: n8n vs Lambda parity (same synthetic BLOCK)
+    if: ${{ vars.BREAK_GLASS_PARITY == 'true' && vars.BREAK_GLASS_LAMBDA_ROLE_ARN != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BREAK_GLASS_TIMEOUT_SECONDS: ${{ vars.BREAK_GLASS_SMOKE_TIMEOUT_SECONDS || '300' }}
+      BREAK_GLASS_POLL_INTERVAL_MS: '5000'
+      CI_REPOSITORY: ${{ github.repository }}
+      CI_COMMIT_SHA: ${{ github.sha }}
+      CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      CI_PULL_REQUEST: ${{ github.event.pull_request.number }}
+      CI_SYSTEM: github-actions-parity
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+
+      - name: Build the synthetic eligible BLOCK both paths receive
+        run: |
+          mkdir -p reports
+          cp security/scripts/__fixtures__/clean/*.json reports/
+          cp security/scripts/__fixtures__/new-high-sast/semgrep.json reports/semgrep.json
+          node security/scripts/security-gate.mjs \
+            --policy security/policy.yaml \
+            --baseline security/baseline/semgrep-baseline.json || true
+          node security/scripts/break-glass-notify.mjs --check-only
+
+      - name: Assume the break-glass invoker role (OIDC)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: break-glass-parity
+
+      - name: Notify both paths with the same gate
+        env:
+          BREAK_GLASS_NOTIFY_URL: ${{ vars.BREAK_GLASS_NOTIFY_URL }}
+          BREAK_GLASS_SHARED_SECRET: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
+          BREAK_GLASS_FUNCTION_NAME: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION || 'break-glass-ci' }}
+        run: |
+          BREAK_GLASS_TRANSPORT=http node security/scripts/break-glass-notify.mjs --output reports/n8n-request.json
+          BREAK_GLASS_TRANSPORT=lambda node security/scripts/break-glass-notify.mjs --output reports/lambda-request.json
+          echo "Click the SAME button (Approve or Deny) as the SAME user on both messages."
+
+      - name: Wait for both decisions
+        env:
+          BREAK_GLASS_STATUS_URL: ${{ vars.BREAK_GLASS_STATUS_URL }}
+          BREAK_GLASS_SHARED_SECRET: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
+          BREAK_GLASS_FUNCTION_NAME: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION || 'break-glass-ci' }}
+        run: |
+          BREAK_GLASS_TRANSPORT=http node security/scripts/break-glass-poll.mjs reports/n8n-request.json reports/n8n-decision.json &
+          n8n=$!
+          BREAK_GLASS_TRANSPORT=lambda node security/scripts/break-glass-poll.mjs reports/lambda-request.json reports/lambda-decision.json &
+          lambda=$!
+          wait $n8n || true
+          wait $lambda || true
+
+      - name: Compare verdicts
+        run: |
+          node --input-type=module -e '
+            import { readFile } from "node:fs/promises";
+            const read = async (f) => JSON.parse(await readFile(f, "utf8"));
+            const [n8nReq, lambdaReq, n8n, lambda] = await Promise.all(
+              ["n8n-request", "lambda-request", "n8n-decision", "lambda-decision"].map((f) => read(`reports/${f}.json`)));
+            const view = (d) => ({ status: d.status, approverId: d.approver?.id ?? null });
+            console.log(JSON.stringify({ sameGateDigest: n8nReq.gateDigest === lambdaReq.gateDigest, n8n: view(n8n), lambda: view(lambda) }, null, 2));
+            if (n8nReq.gateDigest !== lambdaReq.gateDigest) throw new Error("paths received different gates");
+            if (JSON.stringify(view(n8n)) !== JSON.stringify(view(lambda))) throw new Error("VERDICT DIVERGENCE between n8n and Lambda");
+            console.log("Identical verdicts.");
+          '
