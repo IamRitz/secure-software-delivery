@@ -9,12 +9,15 @@
 # (they are npm-managed, not apk-managed), so the durable fix is to not ship
 # npm in the runtime image at all.
 
-# ---- builder: needs npm to install the app's production dependencies --------
-FROM node:22.23.2-alpine3.24 AS builder
+# Node 24.21.0 bundles OpenSSL 3.5.8, verified 2026-09-13 by running
+# node -p process.versions.openssl in this digest. Node 22.23.2 bundles
+# vulnerable OpenSSL 3.5.7 statically; apk upgrade cannot replace it.
 
-# Pin npm to a version that supports min-release-age (the base image ships
-# npm 10.x, which silently ignores it). Done before .npmrc is present, so this
-# self-upgrade is not itself subject to the release-age filter.
+# ---- builder: needs npm to install the app's production dependencies --------
+FROM node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2 AS builder
+
+# Pin npm to the version used for min-release-age enforcement. Done before
+# .npmrc is present, so this self-upgrade is not subject to the release-age filter.
 RUN npm install -g npm@12.0.2
 
 WORKDIR /app
@@ -25,7 +28,7 @@ COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # ---- runtime: the Node runtime only, npm removed ---------------------------
-FROM node:22.23.2-alpine3.24
+FROM node:24.21.0-alpine3.24@sha256:be80f76cf40ec8e42b9bec49f60a55e0660f30af58d3e5a25530785b30ea67e2
 
 # Upgrade apk-managed OS packages to the latest patch available in the pinned
 # Alpine 3.24 repo at build time (e.g. the OpenSSL libssl3/libcrypto3 fix). A
