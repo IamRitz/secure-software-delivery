@@ -240,11 +240,31 @@ repositories; otherwise this control stops being an enforcement boundary.
 
 ## Bundled OpenSSL remediation (2026-09-13)
 
-Node 22.23.2 was the newest published Node 22 release and bundled OpenSSL
-3.5.7. Direct Docker checks confirmed this in both Alpine 3.24 and Debian
-bookworm-slim. Node 24.21.0 Alpine 3.24 reported 3.5.8, so both Dockerfile
-stages now pin that image by digest. Alpine's libssl3/libcrypto3 are separate
-from Node's statically linked OpenSSL; upgrading apk packages cannot patch it.
+**The base image moved from Node 22 to Node 24 because it had to, not by
+preference.** Inspector flagged OpenSSL 3.5.7 statically linked into the `node`
+binary of `node:22.23.2-alpine3.24`. That copy is separate from Alpine's
+`libssl3`/`libcrypto3` packages (already `3.5.8-r0`, and clean in Trivy), so
+upgrading apk packages cannot patch it; only a Node release that bundles a
+patched OpenSSL can. No Node 22.x release does:
+
+| Image | `process.versions.openssl` |
+| --- | --- |
+| `node:22.23.2-alpine3.24` (latest 22.x) | 3.5.7 |
+| `node:22-bookworm-slim` (resolves to 22.23.2) | 3.5.7 |
+| `node:24.20.0` and earlier 24.x (per the Node release index) | 3.5.7 or older |
+| `node:24.21.0-alpine3.24@sha256:be80f76c…` (pinned) | **3.5.8** |
+
+**Verification method:** run the exact image, not the changelog:
+`docker run --rm <image> node -p "process.versions.openssl"`. Checked
+2026-09-13, re-checked 2026-09-14. Both Dockerfile stages pin the 24.21.0 image
+by digest, and CI (`node-version: '24.21.0'`) and the Jenkins stages
+(same digest) are aligned with it, so "passes in CI" and "works in the image"
+mean the same runtime.
+
+**Moving back to a Node 22.x LTS line is preferable if a 22.x release ever
+bundles a patched OpenSSL.** Before switching, re-run the check above on that
+release's digest, then move the Dockerfile, workflows, Jenkinsfile, and
+`package.json` `engines` together.
 
 Inspector's raw artifact from run 34744609758 identified OpenSSL 3.5.7 via
 Node's opensslv.h headers and reported fixedInVersion 4.0.2 for all six

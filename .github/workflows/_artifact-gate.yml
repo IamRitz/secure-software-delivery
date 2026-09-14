@@ -36,7 +36,7 @@ on:
       node_version:
         description: Node version used to run the gate scripts (tool dependency).
         type: string
-        default: '22.23.2'
+        default: '24.21.0'
       toolkit_path:
         description: Directory holding policy.yaml and scripts/ in the checkout.
         type: string
