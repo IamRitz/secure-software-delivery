@@ -237,3 +237,24 @@ The setting was confirmed in GitHub after the Phase 8 pull-request workflow
 registered a successful `security-gate` check. If the repository becomes
 private again, its account plan must support enforcement on private
 repositories; otherwise this control stops being an enforcement boundary.
+
+## Bundled OpenSSL remediation (2026-09-13)
+
+Node 22.23.2 was the newest published Node 22 release and bundled OpenSSL
+3.5.7. Direct Docker checks confirmed this in both Alpine 3.24 and Debian
+bookworm-slim. Node 24.21.0 Alpine 3.24 reported 3.5.8, so both Dockerfile
+stages now pin that image by digest. Alpine's libssl3/libcrypto3 are separate
+from Node's statically linked OpenSSL; upgrading apk packages cannot patch it.
+
+Inspector's raw artifact from run 34744609758 identified OpenSSL 3.5.7 via
+Node's opensslv.h headers and reported fixedInVersion 4.0.2 for all six
+findings (1 Critical, 4 High, 1 Medium). The
+[OpenSSL advisory](https://openssl-library.org/news/secadv/20260825.txt)
+provides 3.5.8 fixes for those CVEs. The suggested version misses the applicable
+3.5 branch fix; fixAvailable YES remains justified. Treat fixedInVersion as
+scanner remediation context to verify against upstream, not an authoritative
+minimum upgrade target. No policy or scanner-output override is applied.
+
+Follow-up: ssm-deploy.mjs checks command exit status only; add an application
+readiness check later, and manually verify /health and the running digest for
+this deployment.
