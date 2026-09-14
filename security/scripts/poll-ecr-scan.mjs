@@ -54,8 +54,8 @@ function run(command, arguments_, environment) {
   });
 }
 
-function awsInvocation(options) {
-  const arguments_ = [
+function ecrScanArguments(options) {
+  return [
     'ecr',
     'describe-image-scan-findings',
     '--repository-name',
@@ -67,7 +67,9 @@ function awsInvocation(options) {
     '--output',
     'json'
   ];
+}
 
+function awsInvocation(options, arguments_) {
   if (!options.aws_cli_container) {
     return { command: 'aws', arguments_, environment: process.env };
   }
@@ -271,7 +273,7 @@ async function recordRawAttempts(path, attempts) {
 export async function pollEcrScan(options) {
   assert(Number.isInteger(options.maxAttempts) && options.maxAttempts > 0, 'invalid max attempts');
   assert(Number.isFinite(options.delaySeconds) && options.delaySeconds >= 0, 'invalid delay');
-  const invocation = awsInvocation(options);
+  const invocation = awsInvocation(options, ecrScanArguments(options));
   const attempts = [];
   let lastWaitReason = 'no successful response';
 
@@ -309,7 +311,21 @@ export async function pollEcrScan(options) {
         // results yet. The previous run's findings arrived ~22s after completion.
         // This is "not ready", not "clean": wait within the attempt budget, and
         // if the counts never appear, fail closed at the limit below.
-        lastWaitReason = 'COMPLETE but findings not yet attached (no findingSeverityCounts)';
+        //
+        // Observed live (run 34809100547): a CLEAN enhanced scan returns this same
+        // counts-less body permanently. For 40 attempts over 10 minutes it never
+        // changed, and Inspector showed the digest scanned with zero findings. The
+        // body alone cannot tell "not attached yet" from "clean", so ask Inspector
+        // directly. Only a positive confirmation reads as clean; anything else
+        // keeps waiting.
+        const confirmation = await confirmCleanEnhancedScan(response, options);
+        record.cleanConfirmation = confirmation;
+        await recordRawAttempts(options.raw_output, attempts);
+        if (confirmation.clean) {
+          console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: COMPLETE, clean (confirmed with Inspector)`);
+          return cleanEnhancedReport(response, options);
+        }
+        lastWaitReason = `COMPLETE but findings not yet attached (no findingSeverityCounts; ${confirmation.reason})`;
         console.log(`ECR image scan attempt ${attempt}/${options.maxAttempts}: ${lastWaitReason}`);
       } else if (['IN_PROGRESS', 'PENDING', 'ACTIVE'].includes(status)) {
         lastWaitReason = status;
@@ -345,6 +361,165 @@ export async function pollEcrScan(options) {
   throw new Error(
     `ECR image scan did not complete before the polling limit (last state: ${lastWaitReason})`
   );
+}
+
+// How long the counts-less body must persist after imageScanCompletedAt before
+// Inspector is asked whether it is clean. Findings for a vulnerable image have
+// attached within ~22s of completion; this leaves margin for that race.
+export const CLEAN_SETTLE_SECONDS = 60;
+
+// Inspector coverage states that mean "this image was scanned successfully".
+const CONFIRMED_COVERAGE_STATUSES = [
+  // Observed live after a successful scan-on-push scan (run 34809100547), and on
+  // the vulnerable image from run 34744609758 whose findings did attach.
+  ['INACTIVE', 'SCAN_FREQUENCY_SCAN_ON_PUSH'],
+  // Documented state for a successfully scanned, continuously monitored image.
+  ['ACTIVE', 'SUCCESSFUL']
+];
+
+async function awsJson(options, arguments_) {
+  const invocation = awsInvocation(options, arguments_);
+  const result = await run(invocation.command, invocation.arguments_, invocation.environment);
+  if (result.code !== 0) {
+    if (isPermanentAwsError(result.stderr)) {
+      throw new Error(
+        `AWS CLI authorization failure while confirming a clean scan with Inspector (not retried): ${result.stderr.trim()}`
+      );
+    }
+    return { error: result.stderr.trim().split('\n')[0] || `exit ${result.code}` };
+  }
+  try {
+    return { body: JSON.parse(result.stdout) };
+  } catch {
+    return { error: 'malformed JSON from Inspector' };
+  }
+}
+
+function notConfirmed(reason) {
+  return { clean: false, reason };
+}
+
+// Positive evidence that a counts-less COMPLETE body is a clean enhanced scan,
+// not an unattached one. Every condition must hold. Any failure, including an
+// Inspector API error, returns not-confirmed, and the poller keeps waiting and
+// fails closed at its limit.
+//   1. The body has exactly the counts-less shape: `findings: []`, no counts,
+//      no enhancedFindings, and it was polled by digest.
+//   2. At least CLEAN_SETTLE_SECONDS have passed since imageScanCompletedAt.
+//   3. Inspector coverage has exactly one package-scan entry for this manifest,
+//      in a confirmed-scanned status, last scanned no earlier than ECR's completion.
+//   4. Inspector holds zero findings, in any status, for this image hash.
+export async function confirmCleanEnhancedScan(response, options, now = Date.now()) {
+  const scan = response.imageScanFindings ?? {};
+  const digest = response.imageId?.imageDigest;
+  if (!options.image_digest || digest !== options.image_digest) {
+    return notConfirmed('clean confirmation requires polling by digest');
+  }
+  if (
+    Object.hasOwn(scan, 'findingSeverityCounts') ||
+    Object.hasOwn(scan, 'enhancedFindings') ||
+    !Array.isArray(scan.findings) ||
+    scan.findings.length > 0
+  ) {
+    return notConfirmed('body is not the counts-less COMPLETE shape');
+  }
+  const completedAt = Date.parse(scan.imageScanCompletedAt);
+  if (!Number.isFinite(completedAt)) {
+    return notConfirmed('body lacks imageScanCompletedAt');
+  }
+  const settleSeconds = options.cleanSettleSeconds ?? CLEAN_SETTLE_SECONDS;
+  if (now - completedAt < settleSeconds * 1000) {
+    return notConfirmed(`settling: less than ${settleSeconds}s since the scan completed`);
+  }
+  if (typeof response.registryId !== 'string' || response.registryId === '') {
+    return notConfirmed('body lacks registryId');
+  }
+
+  const resourceId = `arn:aws:ecr:${options.region}:${response.registryId}:repository/${options.repository}/${digest}`;
+  const coverage = await awsJson(options, [
+    'inspector2',
+    'list-coverage',
+    '--region',
+    options.region,
+    '--filter-criteria',
+    JSON.stringify({ resourceId: [{ comparison: 'EQUALS', value: resourceId }] }),
+    '--output',
+    'json'
+  ]);
+  if (coverage.error) {
+    return notConfirmed(`Inspector coverage unavailable: ${coverage.error}`);
+  }
+  const resources = coverage.body?.coveredResources;
+  if (!Array.isArray(resources) || resources.length !== 1) {
+    return notConfirmed(
+      `Inspector coverage lists ${Array.isArray(resources) ? resources.length : 'no'} resource(s) for ${digest}`
+    );
+  }
+  const [resource] = resources;
+  if (
+    resource.resourceId !== resourceId ||
+    resource.resourceType !== 'AWS_ECR_CONTAINER_IMAGE' ||
+    resource.scanType !== 'PACKAGE'
+  ) {
+    return notConfirmed('Inspector coverage entry is not a package scan of this image');
+  }
+  const { statusCode, reason } = resource.scanStatus ?? {};
+  if (!CONFIRMED_COVERAGE_STATUSES.some(([code, why]) => code === statusCode && why === reason)) {
+    return notConfirmed(`Inspector coverage status ${statusCode}/${reason} is not a confirmed scan`);
+  }
+  const lastScannedAt = Date.parse(resource.lastScannedAt);
+  if (!Number.isFinite(lastScannedAt) || lastScannedAt < completedAt) {
+    return notConfirmed('Inspector has not scanned this image since ECR reported completion');
+  }
+
+  // No status filter: a SUPPRESSED or CLOSED finding is not "clean" either. The
+  // CLI auto-paginates, so this is the complete list.
+  const inspectorFindings = await awsJson(options, [
+    'inspector2',
+    'list-findings',
+    '--region',
+    options.region,
+    '--filter-criteria',
+    JSON.stringify({ ecrImageHash: [{ comparison: 'EQUALS', value: digest }] }),
+    '--output',
+    'json'
+  ]);
+  if (inspectorFindings.error) {
+    return notConfirmed(`Inspector findings unavailable: ${inspectorFindings.error}`);
+  }
+  if (!Array.isArray(inspectorFindings.body?.findings)) {
+    return notConfirmed('Inspector list-findings returned no findings array');
+  }
+  if (inspectorFindings.body.findings.length > 0) {
+    return notConfirmed(
+      `Inspector holds ${inspectorFindings.body.findings.length} finding(s) for ${digest} that ECR has not attached`
+    );
+  }
+
+  return {
+    clean: true,
+    resourceId,
+    coverageStatus: `${statusCode}/${reason}`,
+    lastScannedAt: resource.lastScannedAt,
+    inspectorFindings: 0
+  };
+}
+
+// The same report normalizeEcrResponse produces for an enhanced scan with zero
+// findings. It is only reachable through confirmCleanEnhancedScan.
+function cleanEnhancedReport(response, options) {
+  return {
+    schemaVersion: 1,
+    source: 'aws-ecr-enhanced',
+    scanStatus: 'COMPLETE',
+    image: {
+      repository: options.repository,
+      imageTag: options.image_tag,
+      imageDigest: response.imageId.imageDigest
+    },
+    severityCounts: {},
+    findings: []
+  };
 }
 
 // A COMPLETE status alone does not mean results are readable: the severity

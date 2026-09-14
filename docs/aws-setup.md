@@ -112,12 +112,15 @@ Never broaden this to all repositories or pull-request subjects.
    `AccessDeniedException … not authorized to perform: inspector2:ListCoverage on
    resource: arn:aws:inspector2:<REGION>:<ACCOUNT_ID>:/coverage/list` on every
    attempt, and the gate correctly failed closed with no deploy.
-   `inspector2:ListCoverage` is the permission that run demanded;
-   `inspector2:ListFindings` is expected to be required next (the findings read)
-   and is included so the fix does not take two rounds — confirm it against the
-   next run's raw capture. Both are account-level list APIs with no per-repository
-   resource ARN, hence `"Resource": "*"`; they are read-only. Basic scanning does
-   not need this statement.
+   `inspector2:ListCoverage` is the permission that run demanded.
+   The collector also calls both APIs **directly**. A clean enhanced scan returns
+   `COMPLETE` with no severity counts, the same body as a scan whose findings have
+   not attached yet (run 34809100547). Before reporting the image clean,
+   `poll-ecr-scan.mjs` requires Inspector coverage showing this digest scanned, plus
+   zero Inspector findings for it; anything else waits, then fails closed. Both are
+   account-level list APIs with no per-repository resource ARN, hence
+   `"Resource": "*"`; they are read-only. Basic scanning does not need this
+   statement.
 
    **Deploy role** — assumed by the `deploy` job. SSM only; **no ECR access at all**:
 
