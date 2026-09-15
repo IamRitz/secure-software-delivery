@@ -36,6 +36,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     with:
       gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
       semgrep_configs: |
@@ -49,11 +50,11 @@ jobs:
         "pip-audit":"make dependencies","osv-scanner":"make dependencies","semgrep":"make sast",
         "trivy":"make image-gate","ecr-image-scan":"make image-gate","ecr-enhanced-scan":"make image-gate"}
       break_glass_enabled: true
-      break_glass_notify_url: ${{ vars.BREAK_GLASS_NOTIFY_URL }}
-      break_glass_status_url: ${{ vars.BREAK_GLASS_STATUS_URL }}
+      break_glass_transport: lambda
+      break_glass_lambda_role_arn: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN }}
+      break_glass_lambda_function: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION }}
+      break_glass_aws_region: ${{ vars.AWS_REGION }}
       break_glass_timeout_seconds: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
-    secrets:
-      break_glass_shared_secret: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
 
   security-gate:
     # Stable check name for branch protection. Moving the gate into a reusable

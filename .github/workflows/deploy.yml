@@ -5,41 +5,24 @@ name: Deploy
 # other's events, so the scanners run exactly once per event.
 #
 # Chain:
-#   source-security (no creds) -> container-build (no creds)
-#     -> image-security (no creds) -> aws-configuration (detect only, no creds)
-#     -> ecr-collect (ECR push+scan role) -> artifact-gate (no creds)
-#     -> deploy (SSM deploy role)
 #
-# CREDENTIAL BOUNDARY: only `ecr-collect` and `deploy` assume an AWS role. Every
-# security workflow called here is invoked WITHOUT `secrets: inherit` and holds
-# no cloud credentials.
+#   source-security (break-glass OIDC only after eligibility) ->
+#   container-build (no creds) -> image-security (no creds) ->
+#   aws-configuration (detect only, no creds) ->
+#   ecr-collect (ECR push+scan role) -> artifact-gate (no creds) ->
+#   deploy (SSM deploy role)
+#
+# CREDENTIAL BOUNDARY:
+# - source-security may assume only the break-glass Lambda invoker role,
+#   and only after a BLOCK is confirmed eligible.
+# - ecr-collect assumes the ECR push+scan role.
+# - deploy assumes the SSM deployment role.
+# Scanner/build/gate jobs otherwise hold no cloud credentials.
 on:
   push:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      break_glass_demo:
-        description: Synthetic eligible BLOCK for the Phase 11 interaction demo
-        required: true
-        default: none
-        type: choice
-        options:
-          - none
-          - sast
-          - dependency
-      break_glass_pr_number:
-        description: PR number that receives the audited decision comment
-        required: false
-        type: string
-      break_glass_notify_url:
-        description: Override the notify webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_NOTIFY_URL
-        required: false
-        type: string
-      break_glass_status_url:
-        description: Override the status webhook (e.g. the Slack dev endpoint); falls back to vars.BREAK_GLASS_STATUS_URL
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -54,6 +37,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
     with:
       gate_mode: ${{ vars.GATE_MODE || 'enforce' }}
       semgrep_configs: |
@@ -66,18 +50,12 @@ jobs:
         {"gitleaks":"make secrets","trufflehog":"make secrets","npm-audit":"make dependencies",
         "pip-audit":"make dependencies","osv-scanner":"make dependencies","semgrep":"make sast",
         "trivy":"make image-gate","ecr-image-scan":"make image-gate","ecr-enhanced-scan":"make image-gate"}
-      pr_number: ${{ inputs.break_glass_pr_number }}
       break_glass_enabled: true
-      # A SYNTHETIC BLOCK must never reach the production endpoints, so when
-      # break_glass_demo is set these deliberately do NOT fall back to the repo
-      # Variables — the dispatcher must supply dev endpoints explicitly, and
-      # `_source-security.yml` refuses to run the fixture if either is empty.
-      break_glass_notify_url: ${{ (inputs.break_glass_demo || 'none') == 'none' && (inputs.break_glass_notify_url || vars.BREAK_GLASS_NOTIFY_URL) || inputs.break_glass_notify_url }}
-      break_glass_status_url: ${{ (inputs.break_glass_demo || 'none') == 'none' && (inputs.break_glass_status_url || vars.BREAK_GLASS_STATUS_URL) || inputs.break_glass_status_url }}
+      break_glass_transport: lambda
+      break_glass_lambda_role_arn: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN }}
+      break_glass_lambda_function: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION }}
+      break_glass_aws_region: ${{ vars.AWS_REGION }}
       break_glass_timeout_seconds: ${{ vars.BREAK_GLASS_TIMEOUT_SECONDS }}
-      synthetic_block_fixture: ${{ inputs.break_glass_demo || 'none' }}
-    secrets:
-      break_glass_shared_secret: ${{ secrets.BREAK_GLASS_SHARED_SECRET }}
 
   container-build:
     # Repo-specific build. Holds ZERO cloud credentials — it only builds the
