@@ -3,10 +3,11 @@ name: Source security (reusable)
 # Reusable source-security workflow: secret scan, dependency scan, SAST, and the
 # source security gate.
 #
-# CREDENTIAL BOUNDARY: this workflow assumes NO cloud role and must never be
-# given one. The only secret it accepts is the break-glass shared secret, which
-# is optional, explicit, and grants no infrastructure access. Callers must never
-# use `secrets: inherit`.
+# CREDENTIAL BOUNDARY: scanner jobs receive no cloud credentials.
+# The source-gate job may assume the narrowly scoped break-glass Lambda
+# invoker role through GitHub OIDC, and only after eligibility is confirmed.
+# The legacy HTTP shared-secret interface remains optional for rollback /
+# existing consumers; callers must never use `secrets: inherit`.
 #
 # Portability: every repo-specific value is an input. Node is installed as a TOOL
 # dependency (the gate scripts are .mjs) independent of the target repo's own
@@ -66,6 +67,22 @@ on:
         description: Whether an eligible BLOCK may enter the interactive break-glass approval flow.
         type: boolean
         default: false
+      break_glass_transport:
+        description: Break-glass transport. `http` uses the legacy webhook path; `lambda` uses direct Lambda invocation via GitHub OIDC.
+        type: string
+        default: http
+      break_glass_lambda_role_arn:
+        description: IAM role assumed through GitHub OIDC when break_glass_transport is lambda.
+        type: string
+        default: ''
+      break_glass_lambda_function:
+        description: Lambda function used for break-glass notify/status when transport is lambda.
+        type: string
+        default: ''
+      break_glass_aws_region:
+        description: AWS region containing the break-glass Lambda.
+        type: string
+        default: ''
       break_glass_notify_url:
         description: Break-glass approval-request webhook.
         type: string
@@ -437,8 +454,9 @@ jobs:
       contents: read
       # Scoped to THIS job only: the developer-readable notifier updates one PR
       # comment (find-by-marker) with the full finding detail. No other job is
-      # granted PR write. NOTE: no `id-token`, here or anywhere in this workflow.
+      # granted PR write.
       pull-requests: write
+      id-token: write
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
       break_glass_eligible: ${{ steps.verdict.outputs.break_glass_eligible }}
@@ -532,11 +550,55 @@ jobs:
         if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled }}
         run: node "${{ inputs.toolkit_path }}/scripts/break-glass-notify.mjs" --check-only
 
+      - name: Validate break-glass transport configuration
+        if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled }}
+        env:
+          BREAK_GLASS_TRANSPORT: ${{ inputs.break_glass_transport }}
+          BREAK_GLASS_FUNCTION_NAME: ${{ inputs.break_glass_lambda_function }}
+          BREAK_GLASS_AWS_REGION: ${{ inputs.break_glass_aws_region }}
+          BREAK_GLASS_ROLE_ARN: ${{ inputs.break_glass_lambda_role_arn }}
+        run: |
+          case "$BREAK_GLASS_TRANSPORT" in
+            lambda)
+              test -n "$BREAK_GLASS_FUNCTION_NAME" || {
+                echo "Lambda transport requires a function name" >&2
+                exit 1
+              }
+              test -n "$BREAK_GLASS_AWS_REGION" || {
+                echo "Lambda transport requires an AWS region" >&2
+                exit 1
+              }
+              test -n "$BREAK_GLASS_ROLE_ARN" || {
+                echo "Lambda transport requires an IAM role ARN" >&2
+                exit 1
+              }
+              ;;
+            http)
+              ;;
+            *)
+              echo "Unsupported break-glass transport: $BREAK_GLASS_TRANSPORT" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Assume the break-glass invoker role (OIDC)
+        if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled && inputs.break_glass_transport == 'lambda' }}
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ inputs.break_glass_lambda_role_arn }}
+          aws-region: ${{ inputs.break_glass_aws_region }}
+          role-session-name: break-glass-gate
+
       - name: Request break-glass decision
         if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled }}
         env:
+          BREAK_GLASS_TRANSPORT: ${{ inputs.break_glass_transport }}
+          BREAK_GLASS_FUNCTION_NAME: ${{ inputs.break_glass_lambda_function }}
+          AWS_REGION: ${{ inputs.break_glass_aws_region }}
+
           BREAK_GLASS_NOTIFY_URL: ${{ inputs.break_glass_notify_url }}
           BREAK_GLASS_SHARED_SECRET: ${{ secrets.break_glass_shared_secret }}
+
           BREAK_GLASS_TIMEOUT_SECONDS: ${{ inputs.break_glass_timeout_seconds }}
           CI_REPOSITORY: ${{ github.repository }}
           CI_COMMIT_SHA: ${{ github.sha }}
@@ -549,8 +611,13 @@ jobs:
         id: break-glass
         if: ${{ steps.evaluate.outcome == 'failure' && inputs.gate_mode != 'log-only' && inputs.break_glass_enabled }}
         env:
+          BREAK_GLASS_TRANSPORT: ${{ inputs.break_glass_transport }}
+          BREAK_GLASS_FUNCTION_NAME: ${{ inputs.break_glass_lambda_function }}
+          AWS_REGION: ${{ inputs.break_glass_aws_region }}
+
           BREAK_GLASS_STATUS_URL: ${{ inputs.break_glass_status_url }}
           BREAK_GLASS_SHARED_SECRET: ${{ secrets.break_glass_shared_secret }}
+
           BREAK_GLASS_TIMEOUT_SECONDS: ${{ inputs.break_glass_timeout_seconds }}
         run: node "${{ inputs.toolkit_path }}/scripts/break-glass-poll.mjs"
 

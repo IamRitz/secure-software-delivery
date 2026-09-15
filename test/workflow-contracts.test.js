@@ -19,11 +19,12 @@ const readExecutable = (file) =>
     .join('\n');
 const allWorkflows = readdirSync(WORKFLOW_DIR).filter((name) => name.endsWith('.yml'));
 
-// The reusable workflows that must hold no cloud credentials. `_ecr-collect.yml`
-// is deliberately absent: it is the registry adapter and the one place on this
-// side of the boundary that assumes a role.
+// Reusable workflows that must never hold cloud credentials.
+// `_ecr-collect.yml` is excluded because it is the registry adapter.
+// `_source-security.yml` is excluded because its source-gate job may assume
+// the narrowly scoped break-glass Lambda invoker role after eligibility checks.
+
 const CREDENTIAL_FREE = [
-  '_source-security.yml',
   '_image-scan-prepush.yml',
   '_artifact-gate.yml'
 ];
@@ -64,12 +65,55 @@ describe('workflow split: the credential boundary', () => {
     });
   }
 
-  it('only the ECR adapter, the deploy job, and the break-glass Lambda smoke assume a role', () => {
-    // break-glass-lambda-smoke.yml assumes the invoke-only break-glass role
-    // (lambda:InvokeFunction on break-glass-ci, nothing else) during the n8n ->
-    // Lambda migration. It is not part of the gate.
+  it('only approved workflows assume cloud roles', () => {
     const assuming = allWorkflows.filter((file) => /role-to-assume/.test(read(file)));
-    assert.deepEqual(assuming.sort(), ['_ecr-collect.yml', 'break-glass-lambda-smoke.yml', 'deploy.yml']);
+    assert.deepEqual(
+      assuming.sort(),
+      [
+        '_ecr-collect.yml',
+        '_source-security.yml',
+        'break-glass-lambda-smoke.yml',
+        'deploy.yml'
+      ]
+    );
+  });
+
+  it('source-security scopes OIDC to the source-gate break-glass path', () => {
+    const source = readExecutable('_source-security.yml');
+
+    const sourceGateStart = source.indexOf('  source-gate:');
+    assert.notEqual(sourceGateStart, -1, 'source-gate job is missing');
+
+    const sourceGate = source.slice(sourceGateStart);
+
+    assert.ok(
+      sourceGate.includes('id-token: write'),
+      'source-gate must request an OIDC token'
+    );
+
+    assert.ok(
+      sourceGate.includes('aws-actions/configure-aws-credentials@'),
+      'source-gate must configure AWS credentials'
+    );
+
+    assert.ok(
+      sourceGate.includes('role-to-assume: ${{ inputs.break_glass_lambda_role_arn }}'),
+      'source-gate must assume only the configured break-glass role'
+    );
+
+    const eligibilityIndex = sourceGate.indexOf(
+      'Confirm the BLOCK is eligible before loading any approval credential'
+    );
+    const oidcIndex = sourceGate.indexOf(
+      'Assume the break-glass invoker role (OIDC)'
+    );
+
+    assert.ok(eligibilityIndex >= 0, 'eligibility check is missing');
+    assert.ok(oidcIndex >= 0, 'OIDC role-assumption step is missing');
+    assert.ok(
+      eligibilityIndex < oidcIndex,
+      'OIDC credentials must only be loaded after eligibility is confirmed'
+    );
   });
 
   it('the break-glass Lambda OIDC job needs no repository secret', () => {
