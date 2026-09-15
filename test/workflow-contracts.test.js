@@ -52,6 +52,45 @@ function jobIds(source) {
 }
 
 describe('workflow split: the credential boundary', () => {
+  it('production source-security callers use Lambda OIDC without the legacy shared secret', () => {
+    for (const file of ['security.yml', 'deploy.yml']) {
+      const source = readExecutable(file);
+
+      assert.ok(
+        source.includes('break_glass_transport: lambda'),
+        `${file} must select the Lambda break-glass transport`
+      );
+
+      assert.ok(
+        source.includes(
+          'break_glass_lambda_role_arn: ${{ vars.BREAK_GLASS_LAMBDA_ROLE_ARN }}'
+        ),
+        `${file} must use the dedicated break-glass OIDC role`
+      );
+
+      assert.ok(
+        source.includes(
+          'break_glass_lambda_function: ${{ vars.BREAK_GLASS_LAMBDA_FUNCTION }}'
+        ),
+        `${file} must use the configured break-glass Lambda`
+      );
+
+      assert.ok(
+        !source.includes('break_glass_notify_url:'),
+        `${file} production path must not configure the legacy notify URL`
+      );
+
+      assert.ok(
+        !source.includes('break_glass_status_url:'),
+        `${file} production path must not configure the legacy status URL`
+      );
+
+      assert.ok(
+        !source.includes('break_glass_shared_secret:'),
+        `${file} production path must not pass the legacy shared secret`
+      );
+    }
+  });
   for (const file of CREDENTIAL_FREE) {
     it(`${file} can assume no cloud role`, () => {
       const source = readExecutable(file);
