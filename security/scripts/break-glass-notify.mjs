@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
+import { lambdaInvokerFromEnv } from './break-glass-lambda-invoke.mjs';
+
 const DEFAULT_GATE_PATH = 'reports/security-gate.json';
 const DEFAULT_OUTPUT_PATH = 'reports/break-glass-request.json';
 
@@ -59,11 +61,36 @@ export async function notifyBreakGlass({
   sharedSecret,
   context,
   timeoutSeconds = 900,
-  fetchImpl = globalThis.fetch
+  fetchImpl = globalThis.fetch,
+  // When set, the broker is invoked directly over IAM (GitHub OIDC) instead of the
+  // shared-secret webhook; endpoint and sharedSecret are then unused.
+  invoke = null
 }) {
   const findings = validateEligibleGate(gate);
-  const url = requireHttps(endpoint, 'BREAK_GLASS_NOTIFY_URL');
-  assert(typeof sharedSecret === 'string' && sharedSecret !== '', 'shared secret is not configured');
+  let send;
+  if (invoke) {
+    send = async (payload) => {
+      const result = await invoke({ action: 'notify', payload });
+      assert(result?.ok === true, `break-glass broker rejected notify: ${result?.error ?? 'no response'}`);
+      return result.body;
+    };
+  } else {
+    const url = requireHttps(endpoint, 'BREAK_GLASS_NOTIFY_URL');
+    assert(typeof sharedSecret === 'string' && sharedSecret !== '', 'shared secret is not configured');
+    send = async (payload) => {
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-break-glass-token': sharedSecret
+        },
+        body: JSON.stringify(payload),
+        signal: globalThis.AbortSignal.timeout(15_000)
+      });
+      assert(response.ok, `notification endpoint returned HTTP ${response.status}`);
+      return response.json();
+    };
+  }
   assert(Number.isInteger(timeoutSeconds) && timeoutSeconds > 0, 'timeout must be positive');
   assert(context && typeof context === 'object', 'CI context is required');
   assert(typeof context.repository === 'string' && context.repository.includes('/'), 'repository is required');
@@ -77,18 +104,8 @@ export async function notifyBreakGlass({
     context,
     findings
   };
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-break-glass-token': sharedSecret
-    },
-    body: JSON.stringify(payload),
-    signal: globalThis.AbortSignal.timeout(15_000)
-  });
-  assert(response.ok, `notification endpoint returned HTTP ${response.status}`);
-  const result = await response.json();
-  assert(typeof result.requestId === 'string' && result.requestId !== '', 'response lacks requestId');
+  const result = await send(payload);
+  assert(typeof result?.requestId === 'string' && result.requestId !== '', 'response lacks requestId');
   assert(result.status === 'pending', 'new request was not recorded as pending');
   return {
     schemaVersion: 1,
@@ -139,7 +156,8 @@ async function main() {
       endpoint: process.env.BREAK_GLASS_NOTIFY_URL,
       sharedSecret: process.env.BREAK_GLASS_SHARED_SECRET,
       context,
-      timeoutSeconds
+      timeoutSeconds,
+      invoke: lambdaInvokerFromEnv(process.env)
     });
     await mkdir(dirname(options.output), { recursive: true });
     await writeFile(options.output, `${JSON.stringify(result, null, 2)}\n`);

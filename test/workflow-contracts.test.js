@@ -64,9 +64,19 @@ describe('workflow split: the credential boundary', () => {
     });
   }
 
-  it('only the ECR adapter and the deploy job assume a role', () => {
+  it('only the ECR adapter, the deploy job, and the break-glass Lambda smoke assume a role', () => {
+    // break-glass-lambda-smoke.yml assumes the invoke-only break-glass role
+    // (lambda:InvokeFunction on break-glass-ci, nothing else) during the n8n ->
+    // Lambda migration. It is not part of the gate.
     const assuming = allWorkflows.filter((file) => /role-to-assume/.test(read(file)));
-    assert.deepEqual(assuming.sort(), ['_ecr-collect.yml', 'deploy.yml']);
+    assert.deepEqual(assuming.sort(), ['_ecr-collect.yml', 'break-glass-lambda-smoke.yml', 'deploy.yml']);
+  });
+
+  it('the break-glass Lambda OIDC job needs no repository secret', () => {
+    const source = readExecutable('break-glass-lambda-smoke.yml');
+    const oidcJob = source.slice(source.indexOf('  oidc-invoke:'), source.indexOf('  parity:'));
+    assert.ok(oidcJob.includes('BREAK_GLASS_TRANSPORT: lambda'));
+    assert.ok(!/secrets\./.test(oidcJob), 'the OIDC invoke path must not read any secret');
   });
 
   it('no workflow uses `secrets: inherit`', () => {
